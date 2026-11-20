@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+# xcodebuild for the Linux build: builds the iOS app that dm/ios/tools/build_ipa.sh asks Xcode for, from the description linux/bin/xcodegen wrote (<project>/nxn_project.json),
+# with clang and swiftc for the player's Xcode SDK and lld as the linker (linux/libexec/darwin-cc, darwin-swiftc).
+#   xcodebuild -version                         the installed Xcode's version (from its version.plist)
+#   xcodebuild -project P [-scheme S] [-configuration C] [-destination D] [-derivedDataPath DD] [KEY=VALUE ...] build
+# What it does as Xcode does: the build settings (defaults < project xcconfig < project settings < target settings < command line, with $(inherited)), C / Objective-C /
+# assembly compiles (one per source, every core, each again only when the source, a header it read or its flags changed), the Swift sources in one whole-module compile with
+# the bridging header, the link (OTHER_LDFLAGS, the frameworks the sources import), the bundle (executable, Info.plist with Xcode's DT* keys, PkgInfo, resources, folder
+# references). What it does differently: no asset catalog compiler (actool is Apple's): the app icon of an .appiconset goes in as PNG files named in CFBundleIcons, which iOS reads
+# as well; no code signing (build_ipa.sh signs the executable ad-hoc); postBuildScripts do not run (project.yml's only one copies the game's files, which the unsigned IPA build
+# turns off). Progress lines name each step (CompileC, CompileSwiftSources, Ld) as in Xcode's log; the NSP script counts the CompileC lines.
+import concurrent.futures as cf, hashlib, json, os, plistlib, re, shlex, shutil, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn, xcsettings
+
+CC, SWIFTC = nxn.LINUX / 'libexec/darwin-cc', nxn.LINUX / 'libexec/darwin-swiftc'
+C_EXT, OBJC_EXT, ASM_EXT, SWIFT_EXT = {'.c'}, {'.m'}, {'.S', '.s'}, {'.swift'}
+CXX_EXT, OBJCXX_EXT = {'.cc', '.cpp', '.cxx'}, {'.mm'}
+CODE = C_EXT | OBJC_EXT | ASM_EXT | SWIFT_EXT | CXX_EXT | OBJCXX_EXT
+HEADERS = {'.h', '.hh', '.hpp', '.inc', '.def'}
+SKIP = {'.DS_Store', 'Info.plist'}
+ICONS = [('AppIcon60x60', 60, (2, 3), ''), ('AppIcon76x76', 76, (2,), '~ipad'), ('AppIcon83.5x83.5', 83.5, (2,), '~ipad')]
+
+
+def say(*a): print(*a, flush=True)
+
+
+def fail(msg):
+    say(f'error: {msg}'); say('** BUILD FAILED **'); sys.exit(65)
+
+
+def version():
+    v, b = nxn.xcode_version()
+    if not v: nxn.die('no Xcode installed: linux/setup/setup.py xcode <Xcode.xip>', 72)
+    say(f'Xcode {v}\nBuild version {b}')
+
+
+def defaults(desc, deploy):
+    t = desc['target']
+    return {'PRODUCT_NAME': t, 'TARGET_NAME': t, 'PROJECT_NAME': desc['name'], 'EXECUTABLE_NAME': '$(PRODUCT_NAME)', 'WRAPPER_NAME': '$(PRODUCT_NAME).app',
+            'PRODUCT_MODULE_NAME': '$(PRODUCT_NAME)', 'PRODUCT_BUNDLE_PACKAGE_TYPE': 'APPL', 'DEVELOPMENT_LANGUAGE': 'en', 'CONFIGURATION': 'Release',
+            'PLATFORM_NAME': 'iphoneos', 'EFFECTIVE_PLATFORM_NAME': '-iphoneos', 'SDKROOT': 'iphoneos', 'SRCROOT': desc['root'], 'PROJECT_DIR': desc['root'],
+            'IPHONEOS_DEPLOYMENT_TARGET': deploy, 'SYMROOT': '$(SRCROOT)/build', 'OBJROOT': '$(SYMROOT)',
+            'CONFIGURATION_BUILD_DIR': '$(SYMROOT)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)',
+            'CONFIGURATION_TEMP_DIR': '$(OBJROOT)/$(PROJECT_NAME).build/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)',
+            'TARGET_TEMP_DIR': '$(CONFIGURATION_TEMP_DIR)/$(TARGET_NAME).build', 'GCC_OPTIMIZATION_LEVEL': 's', 'SWIFT_OPTIMIZATION_LEVEL': '-O',
+            'SWIFT_COMPILATION_MODE': 'wholemodule', 'TARGETED_DEVICE_FAMILY': '1', 'CLANG_ENABLE_MODULES': 'YES', 'GCC_C_LANGUAGE_STANDARD': 'gnu11',
+            'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20', 'DEAD_CODE_STRIPPING': 'YES', 'ENABLE_NS_ASSERTIONS': 'NO', 'CLANG_ENABLE_OBJC_WEAK': 'YES',
+            'DEBUG_INFORMATION_FORMAT': 'dwarf-with-dsym', 'SWIFT_VERSION': '5.0', 'LD_RUNPATH_SEARCH_PATHS': '$(inherited) @executable_path/Frameworks'}
+
+
+def target_layers(raw):   # XcodeGen's settings: flat, or base + configs.<name>
+    if isinstance(raw, dict) and ('base' in raw or 'configs' in raw):
+        out = dict(raw.get('base') or {})
+        out.update((raw.get('configs') or {}).get(os.environ.get('NXN_CONFIGURATION', 'Release')) or {})
+        return out
+    return dict(raw or {})
+
+
+def collect(desc):
+    """(compile units [(path, extra flags)], header folders, resource files, folder references, asset catalogs)"""
+    units, hdirs, res, folders, catalogs = [], [], [], [], []
+    import fnmatch
+    for s in desc['sources']:
+        p = Path(s['abs'])
+        flags = shlex.split(s.get('compilerFlags') or '') if isinstance(s.get('compilerFlags'), str) else list(s.get('compilerFlags') or [])
+        if s.get('type') == 'folder':
+            folders.append(p); continue
+        if p.suffix == '.xcassets': catalogs.append(p); continue
+        if p.is_file():
+            files = [p]
+        elif p.is_dir():
+            ex = s.get('excludes') or []
+            files = []
+            for d, dn, fn in os.walk(p, followlinks=True):
+                dn[:] = sorted(x for x in dn if not x.startswith('.'))
+                for x in list(dn):
+                    if x.endswith('.xcassets'): catalogs.append(Path(d) / x); dn.remove(x)
+                for f in sorted(fn):
+                    rel = os.path.relpath(os.path.join(d, f), p)
+                    if f in SKIP or f.startswith('.') or any(fnmatch.fnmatch(rel, e) or fnmatch.fnmatch(f, e) for e in ex): continue
+                    files.append(Path(d) / f)
+        else:
+            say(f'warning: source {p} does not exist'); continue
+        for f in files:
+            if f.suffix in CODE: units.append((f, flags))
+            elif f.suffix in HEADERS:
+                if str(f.parent) not in hdirs: hdirs.append(str(f.parent))
+            elif f.name not in SKIP: res.append(f)
+    return units, hdirs, res, folders, catalogs
+
+
+class Compiler:
+    def __init__(self, st, sdk, objdir, hdirs):
+        self.st, self.sdk, self.objdir = st, sdk, objdir
+        deploy = st.get('IPHONEOS_DEPLOYMENT_TARGET') or sdk['version']
+        self.target = f'arm64-apple-ios{deploy}'
+        common = [f'--target={self.target}', '-isysroot', sdk['path'], '-fmessage-length=0', '-fno-common', f'-O{st.get("GCC_OPTIMIZATION_LEVEL", "s")}']
+        if st.get('DEBUG_INFORMATION_FORMAT').startswith('dwarf'): common.append('-g')
+        if not st.yes('ENABLE_NS_ASSERTIONS'): common.append('-DNS_BLOCK_ASSERTIONS=1')
+        common += [f'-D{d}' for d in st.list('GCC_PREPROCESSOR_DEFINITIONS')]
+        if st.yes('GCC_WARN_INHIBIT_ALL_WARNINGS'): common.append('-w')
+        inc = []
+        for d in st.list('HEADER_SEARCH_PATHS'):
+            d = d[:-3] if d.endswith('/**') else d
+            if d and f'-I{d}' not in inc: inc.append(f'-I{d}')
+        inc += [f'-iquote{d}' for d in st.list('USER_HEADER_SEARCH_PATHS')]
+        inc += [f'-iquote{d}' for d in hdirs]   # Xcode's header map: a quoted include finds any header of the target
+        self.inc = inc
+        self.common = common + inc + st.list('OTHER_CFLAGS')
+        modules = st.yes('CLANG_ENABLE_MODULES', True) and os.environ.get('NXN_CLANG_MODULES', '1') != '0'
+        self.mod = ['-fmodules', '-fcxx-modules', f'-fmodules-cache-path={objdir / "ModuleCache"}'] if modules else []
+        std = st.get('GCC_C_LANGUAGE_STANDARD', 'gnu11')
+        arc = ['-fobjc-arc'] + (['-fobjc-weak'] if st.yes('CLANG_ENABLE_OBJC_WEAK') else []) if st.yes('CLANG_ENABLE_OBJC_ARC') else []
+        cxx = st.get('CLANG_CXX_LANGUAGE_STANDARD', 'gnu++20')
+        self.lang = {'.c': ['-x', 'c', f'-std={std}'] + self.mod, '.m': ['-x', 'objective-c', f'-std={std}'] + arc + self.mod,
+                     '.S': ['-x', 'assembler-with-cpp'], '.s': ['-x', 'assembler'], '.cc': ['-x', 'c++', f'-std={cxx}'], '.cpp': ['-x', 'c++', f'-std={cxx}'],
+                     '.cxx': ['-x', 'c++', f'-std={cxx}'], '.mm': ['-x', 'objective-c++', f'-std={cxx}'] + arc}
+
+    def obj(self, src):
+        h = hashlib.sha1(str(src).encode()).hexdigest()[:10]
+        return self.objdir / f'{src.stem}-{h}.o'
+
+    def command(self, src, extra):
+        o = self.obj(src)
+        return o, [str(CC), *self.lang[src.suffix], *self.common, *extra, '-MMD', '-MF', str(o.with_suffix('.d')), '-c', str(src), '-o', str(o)]
+
+    @staticmethod
+    def current(o, cmd):
+        stamp = o.with_suffix('.cmd')
+        try:
+            if stamp.read_text() != '\0'.join(cmd): return False
+            t = o.stat().st_mtime
+            deps = o.with_suffix('.d').read_text().replace('\\\n', ' ').split(':', 1)[1].split()
+            return all(os.stat(d).st_mtime <= t for d in deps)
+        except (OSError, IndexError): return False
+
+    def compile(self, src, extra):
+        o, cmd = self.command(src, extra)
+        if self.current(o, cmd): return o, None
+        o.parent.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, NXN_SDK='iphoneos', NXN_CC_NAME='clang++' if src.suffix in CXX_EXT | OBJCXX_EXT else 'clang')
+        r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=env)
+        if r.returncode: return o, f'{" ".join(shlex.quote(c) for c in cmd)}\n{r.stdout}{r.stderr}'
+        o.with_suffix('.cmd').write_text('\0'.join(cmd))
+        return o, (r.stderr if r.stderr.strip() and os.environ.get('NXN_VERBOSE') else None)
+
+
+def swift(st, sdk, objdir, units, desc, comp):
+    files = [str(p) for p, _ in units]
+    if not files: return []
+    o = objdir / 'swift' / f'{st.get("PRODUCT_MODULE_NAME")}-swift.o'
+    o.parent.mkdir(parents=True, exist_ok=True)
+    ver = st.get('SWIFT_VERSION', '5.0').split('.')[0]
+    cmd = [str(SWIFTC), '-target', comp.target, '-module-name', re.sub(r'\W', '_', st.get('PRODUCT_MODULE_NAME')), st.get('SWIFT_OPTIMIZATION_LEVEL', '-O'),
+           '-swift-version', ver, '-parse-as-library', '-emit-object', '-module-cache-path', str(objdir / 'SwiftModuleCache')]
+    cmd.append('-whole-module-optimization')   # one object; Xcode's Release compiles the module whole too
+    bh = st.get('SWIFT_OBJC_BRIDGING_HEADER')
+    if bh: cmd += ['-import-objc-header', str(Path(desc['root']) / bh) if not os.path.isabs(bh) else bh]
+    for f in comp.inc: cmd += ['-Xcc', f]
+    for f in st.list('OTHER_CFLAGS') + st.list('GCC_PREPROCESSOR_DEFINITIONS'):
+        if f.startswith('-D'): cmd += ['-Xcc', f]
+        elif not f.startswith('-'): cmd += ['-Xcc', f'-D{f}']
+    cmd += st.list('OTHER_SWIFT_FLAGS') + [f'-D{c}' for c in st.list('SWIFT_ACTIVE_COMPILATION_CONDITIONS')]
+    cmd += ['-o', str(o), *files]
+    stamp, key = o.with_suffix('.cmd'), '\0'.join(cmd)
+    try: fresh = stamp.read_text() == key and all(os.stat(f).st_mtime <= o.stat().st_mtime for f in files)
+    except OSError: fresh = False
+    say(f'CompileSwiftSources normal arm64 com.apple.xcode.tools.swift.compiler ({len(files)} files)')
+    if not fresh:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', env=dict(os.environ, NXN_SDK='iphoneos'))
+        if r.returncode:
+            say(' '.join(shlex.quote(c) for c in cmd)); say(r.stdout + r.stderr); fail('the Swift compile failed')
+        stamp.write_text(key)
+    return [o]
+
+
+def imported_frameworks(units, sdk):
+    """The frameworks the sources import (#import <X/...>, @import X, Swift's import X) that the SDK has: Xcode links them through module auto-linking"""
+    fw = Path(sdk['path']) / 'System/Library/Frameworks'
+    names = []
+    for p, _ in units:
+        if p.suffix not in OBJC_EXT | SWIFT_EXT | OBJCXX_EXT: continue
+        try: text = p.read_text(errors='replace')
+        except OSError: continue
+        for m in re.finditer(r'^\s*(?:#import\s*<(\w+)/|@import\s+(\w+)|import\s+(?:struct\s+|class\s+|enum\s+|func\s+)?(\w+))', text, re.M):
+            n = m[1] or m[2] or m[3]
+            if n and n not in names and (fw / f'{n}.framework').is_dir(): names.append(n)
+    return names
+
+
+def icons(catalogs, name, app, info):
+    """The .appiconset name (ASSETCATALOG_COMPILER_APPICON_NAME) as loose PNGs in the bundle, named in CFBundleIcons (Xcode's actool makes Assets.car instead)"""
+    if not name: return
+    src = None
+    for c in catalogs:
+        s = c / f'{name}.appiconset'
+        if s.is_dir():
+            try: imgs = json.loads((s / 'Contents.json').read_text()).get('images') or []
+            except (OSError, ValueError): imgs = []
+            files = [s / i['filename'] for i in imgs if i.get('filename') and (s / i['filename']).is_file()]
+            if files: src = max(files, key=lambda f: f.stat().st_size); break
+    if not src: say(f'warning: no app icon set {name}'); return
+    from PIL import Image
+    im = Image.open(src).convert('RGBA')
+    for base, pt, scales, suffix in ICONS:
+        for k in scales:
+            n = round(pt * k)
+            im.resize((n, n), Image.LANCZOS).convert('RGB').save(app / f'{base}@{k}x{suffix}.png')
+    info['CFBundleIcons'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60'], 'CFBundleIconName': name}}
+    info['CFBundleIcons~ipad'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60', 'AppIcon76x76', 'AppIcon83.5x83.5'], 'CFBundleIconName': name}}
+    say(f'icon: {src.name} → {", ".join(b for b, _, _, _ in ICONS)}')
+
+
+def dtxcode(v):   # Xcode 27.2 → 2720, 16.4.1 → 1641: the major version, then one digit each for minor and patch
+    p = [int(x) for x in re.findall(r'\d+', v or '')[:3]] + [0, 0, 0]
+    return f'{p[0]}{min(p[1], 9)}{min(p[2], 9)}'
+
+
+def expand_plist(v, st):
+    if isinstance(v, str): return st.expand(v)
+    if isinstance(v, list): return [expand_plist(x, st) for x in v]
+    if isinstance(v, dict): return {k: expand_plist(x, st) for k, x in v.items()}
+    return v
+
+
+def build(args):
+    proj, cmdline, conf, dd = None, {}, 'Release', None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == '-project': proj = Path(args[i + 1]); i += 2; continue
+        if a in ('-scheme', '-destination', '-target', '-sdk', '-arch', '-jobs', '-workspace', '-xcconfig', '-resultBundlePath'): i += 2; continue
+        if a == '-configuration': conf = args[i + 1]; i += 2; continue
+        if a == '-derivedDataPath': dd = Path(args[i + 1]); i += 2; continue
+        m = re.fullmatch(r'([A-Za-z_][A-Za-z0-9_]*)=(.*)', a)
+        if m: cmdline[m[1]] = m[2]
+        i += 1
+    proj = proj or next(Path('.').glob('*.xcodeproj'), None)
+    if not proj or not (proj / 'nxn_project.json').is_file(): fail(f'no project description in {proj} (linux/bin/xcodegen generate writes it)')
+    desc = json.loads((proj / 'nxn_project.json').read_text())
+    os.environ['NXN_CONFIGURATION'] = conf
+    try: sdk = nxn.sdk_settings('iphoneos')
+    except nxn.Missing as e: fail(str(e))
+    deploy = desc.get('deploymentTarget') or sdk['version']
+    layers = [defaults(desc, deploy)]
+    cfg = desc['configFiles'].get(conf)
+    layers.append(xcsettings.read_xcconfig(cfg) if cfg else {})
+    layers.append(target_layers(desc.get('projectSettings')))
+    layers.append(target_layers(desc.get('settings')))
+    cl = dict(cmdline, CONFIGURATION=conf)
+    if dd and 'SYMROOT' not in cl: cl['SYMROOT'] = str(dd / 'Build/Products')
+    if dd and 'OBJROOT' not in cl: cl['OBJROOT'] = str(dd / 'Build/Intermediates.noindex')
+    layers.append(cl)
+    st = xcsettings.Settings(layers)
+    units, hdirs, res, folders, catalogs = collect(desc)
+    objdir = Path(st.get('TARGET_TEMP_DIR')) / 'Objects-normal/arm64'
+    objdir.mkdir(parents=True, exist_ok=True)
+    comp = Compiler(st, sdk, objdir, hdirs)
+    say(f'note: building {desc["target"]} ({conf}, {comp.target}, SDK iphoneos{sdk["version"]}): {len(units)} sources')
+    native = [(p, f) for p, f in units if p.suffix not in SWIFT_EXT]
+    sw = [(p, f) for p, f in units if p.suffix in SWIFT_EXT]
+    objs = swift(st, sdk, objdir, sw, desc, comp)   # first, as Xcode orders them: a failure there is quick
+    jobs = int(os.environ.get('NXN_JOBS') or os.cpu_count() or 4)
+    errors = []
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        futs = {ex.submit(comp.compile, p, f): p for p, f in native}
+        for fu in cf.as_completed(futs):
+            p = futs[fu]
+            o, err = fu.result()
+            say(f'CompileC {o} {p} normal arm64')
+            if err:
+                if '\nerror' in err or ': error:' in err or 'error:' in err: errors.append((p, err))
+                else: say(err)
+            objs.append(o)
+    if errors:
+        for p, e in errors[:8]: say(e)
+        fail(f'{len(errors)} of {len(native)} compiles failed (first: {errors[0][0]})')
+    objs = sorted(set(objs), key=lambda o: str(o))
+    name = st.get('PRODUCT_NAME')
+    app = Path(st.get('CONFIGURATION_BUILD_DIR')) / st.get('WRAPPER_NAME', f'{name}.app')
+    exe_name = st.get('EXECUTABLE_NAME', name)
+    if app.exists(): shutil.rmtree(app)
+    app.mkdir(parents=True)
+    exe = app / exe_name
+    fws = list(dict.fromkeys(imported_frameworks(units, sdk)))
+    link = [str(CC), f'--target={comp.target}', '-isysroot', sdk['path'], '-fobjc-link-runtime', '-o', str(exe)]
+    try: res_dir = nxn.swift_resource_dir()
+    except nxn.Missing as e:
+        if sw: fail(str(e))
+        res_dir = None
+    if sw:
+        link += ['-L', f'{sdk["path"]}/usr/lib/swift'] + (['-L', str(res_dir / 'iphoneos')] if res_dir else []) + ['-Xlinker', '-rpath', '-Xlinker', '/usr/lib/swift']
+    for r in st.list('LD_RUNPATH_SEARCH_PATHS'): link += ['-Xlinker', '-rpath', '-Xlinker', r]
+    if st.yes('DEAD_CODE_STRIPPING'): link += ['-Xlinker', '-dead_strip']
+    link += [f'@{objdir / "objects.txt"}']
+    (objdir / 'objects.txt').write_text('\n'.join(shlex.quote(str(o)) for o in objs) + '\n')
+    other = st.list('OTHER_LDFLAGS')
+    have = {other[k + 1] for k, x in enumerate(other[:-1]) if x == '-framework'}
+    link += other + [x for f in fws if f not in have for x in ('-framework', f)]
+    say(f'Ld {exe} normal arm64 ({len(objs)} objects; frameworks: {" ".join(sorted(have | set(fws)))})')
+    r = subprocess.run(link, capture_output=True, text=True, errors='replace', env=dict(os.environ, NXN_SDK='iphoneos'))
+    if r.returncode:
+        say(' '.join(shlex.quote(c) for c in link)); say(r.stdout + r.stderr); fail('the link failed')
+    if r.stderr.strip(): say(r.stderr.strip()[:4000])
+    info = {}
+    if desc.get('info'):
+        with open(desc['info'], 'rb') as f: info = expand_plist(plistlib.load(f), st)
+    v, b = nxn.xcode_version()
+    fam = [int(x) for x in re.split(r'[,\s]+', st.get('TARGETED_DEVICE_FAMILY', '1')) if x.strip().isdigit()]
+    info.update({'CFBundleSupportedPlatforms': ['iPhoneOS'], 'DTPlatformName': 'iphoneos', 'DTPlatformVersion': sdk['version'], 'DTPlatformBuild': sdk['build'],
+                 'DTSDKName': f'iphoneos{sdk["version"]}', 'DTSDKBuild': sdk['build'], 'DTXcode': dtxcode(v),
+                 'DTXcodeBuild': b, 'DTCompiler': 'com.apple.compilers.llvm.clang.1_0', 'MinimumOSVersion': st.get('IPHONEOS_DEPLOYMENT_TARGET') or deploy,
+                 'UIDeviceFamily': fam, 'BuildMachineOSBuild': ''})
+    info.setdefault('CFBundleExecutable', exe_name)
+    icons(catalogs, st.get('ASSETCATALOG_COMPILER_APPICON_NAME'), app, info)
+    with open(app / 'Info.plist', 'wb') as f: plistlib.dump(info, f, fmt=plistlib.FMT_BINARY)
+    (app / 'PkgInfo').write_text('APPL????')
+    for f in res: shutil.copy2(f, app / f.name)
+    for d in folders:
+        if d.is_dir(): shutil.copytree(d, app / d.name, symlinks=False, dirs_exist_ok=True)
+        else: say(f'warning: folder reference {d} does not exist')
+    for s in desc.get('postBuildScripts') or []: say(f'note: post-build script "{s}" is not run on Linux (DM_COPY_GAME_RESOURCES={st.get("DM_COPY_GAME_RESOURCES")})')
+    say(f'app: {app}')
+    say('** BUILD SUCCEEDED **')
+
+
+def main(argv):
+    if '-version' in argv or '--version' in argv: version(); return 0
+    if any(a in argv for a in ('-downloadComponent', '-downloadPlatform', '-runFirstLaunch')):
+        nxn.die('the Linux build takes the SDK and the Metal tools from linux/setup/setup.py, not from Apple\'s servers', 2)
+    if '-showsdks' in argv:
+        for s in ('iphoneos', 'macosx'):
+            try: print(f'\t-sdk {s}{nxn.sdk_settings(s)["version"]}')
+            except nxn.Missing: pass
+        return 0
+    build(argv)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

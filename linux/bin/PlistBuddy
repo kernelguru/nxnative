@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+# PlistBuddy for the Linux build: the commands dm/ios/tools/build_ipa.sh and the NSP script give it (build_ipa.sh calls it through PLISTBUDDY).
+#   PlistBuddy [-x] -c "<command>" [-c ...] <file>    commands: Print [:path], Add :path <type> [value], Set :path <value>, Delete :path
+#   types: string, bool, integer, real, date, data, array, dict. Paths are :Key:Sub:0 (array indexes as numbers). The file keeps its format (XML or binary).
+import plistlib, shlex, sys
+from datetime import datetime
+
+
+def parse_path(p):
+    return [int(x) if x.isdigit() else x for x in p.lstrip(':').split(':') if x != ''] if p else []
+
+
+def walk(root, keys, create=False):
+    cur = root
+    for k in keys:
+        if isinstance(cur, list):
+            if not isinstance(k, int) or k >= len(cur): raise KeyError(k)
+            cur = cur[k]
+        else:
+            if k not in cur:
+                if not create: raise KeyError(k)
+                cur[k] = {}
+            cur = cur[k]
+    return cur
+
+
+def value(kind, text):
+    kind = kind.lower()
+    if kind == 'string': return text or ''
+    if kind == 'bool': return (text or '').lower() in ('true', 'yes', '1')
+    if kind == 'integer': return int(text or 0)
+    if kind == 'real': return float(text or 0)
+    if kind == 'date': return datetime.fromisoformat(text) if text else datetime.now()
+    if kind == 'data': return (text or '').encode()
+    if kind == 'array': return []
+    if kind == 'dict': return {}
+    raise ValueError(f'Unrecognized Type: {kind}')
+
+
+def show(v, ind=0):
+    pad = '    ' * ind
+    if isinstance(v, dict):
+        print('Dict {'); [print(f'{pad}    {k} = ', end='') or show(x, ind + 1) for k, x in v.items()]; print(pad + '}')
+    elif isinstance(v, list):
+        print('Array {'); [print(pad + '    ', end='') or show(x, ind + 1) for x in v]; print(pad + '}')
+    elif isinstance(v, bool): print('true' if v else 'false')
+    else: print(v if not isinstance(v, bytes) else v.decode(errors='replace'))
+
+
+def main(argv):
+    cmds, path, xml = [], None, False
+    i = 0
+    while i < len(argv):
+        if argv[i] == '-c': cmds.append(argv[i + 1]); i += 2
+        elif argv[i] == '-x': xml = True; i += 1
+        else: path = argv[i]; i += 1
+    if not path: print('Usage: PlistBuddy [-cxh] <file.plist>', file=sys.stderr); return 1
+    try:
+        with open(path, 'rb') as f: raw = f.read()
+        fmt = plistlib.FMT_BINARY if raw.startswith(b'bplist') else plistlib.FMT_XML
+        root = plistlib.loads(raw)
+    except FileNotFoundError:
+        root, fmt = {}, plistlib.FMT_XML
+    changed = False
+    for c in cmds:
+        t = shlex.split(c)
+        if not t: continue
+        op, keys = t[0].lower(), parse_path(t[1] if len(t) > 1 else '')
+        try:
+            if op == 'print':
+                v = walk(root, keys)
+                if xml: sys.stdout.write(plistlib.dumps(v).decode())
+                else: show(v)
+            elif op == 'add':
+                if len(t) < 3: raise ValueError('Add: no type')
+                parent, last = walk(root, keys[:-1], create=True), keys[-1]
+                v = value(t[2], ' '.join(t[3:]) if len(t) > 3 else '')
+                if isinstance(parent, list): parent.insert(last if isinstance(last, int) else len(parent), v)
+                elif last in parent:
+                    print(f'Add: ":{":".join(map(str, keys))}" Entry Already Exists', file=sys.stderr); return 1
+                else: parent[last] = v
+                changed = True
+            elif op == 'set':
+                parent, last = walk(root, keys[:-1]), keys[-1]
+                old = parent[last]
+                new = ' '.join(t[2:])
+                parent[last] = (new.lower() in ('true', 'yes', '1')) if isinstance(old, bool) else int(new) if isinstance(old, int) else float(new) if isinstance(old, float) else new
+                changed = True
+            elif op == 'delete':
+                parent, last = walk(root, keys[:-1]), keys[-1]
+                del parent[last]; changed = True
+            else:
+                print(f'Unrecognized command: {t[0]}', file=sys.stderr); return 1
+        except (KeyError, IndexError):
+            print(f'{t[0]}: Entry, ":{":".join(map(str, keys))}", Does Not Exist', file=sys.stderr); return 1
+        except ValueError as e:
+            print(str(e), file=sys.stderr); return 1
+    if changed:
+        with open(path, 'wb') as f: plistlib.dump(root, f, fmt=fmt)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

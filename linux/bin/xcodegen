@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+# xcodegen for the Linux build: reads dm/ios/project.yml as XcodeGen does (${VAR} from the environment), writes the target's Info.plist (info.path) and, in place of an Xcode
+# project, <name>.xcodeproj/nxn_project.json: the resolved description linux/bin/xcodebuild builds from. Only what project.yml uses is supported: one application target, its
+# sources (files, folders, excludes, folder references in the resources phase, per-file compilerFlags), settings, configFiles, info properties and deployment target.
+# Usage: xcodegen generate [-q] [--spec project.yml] [--project <dir>]
+import json, os, plistlib, re, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn
+try: import yaml
+except ImportError: nxn.die('xcodegen needs PyYAML (pip install pyyaml; the Docker image has it)')
+
+ENV = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
+
+
+def expand(v):   # XcodeGen replaces ${VAR} with the environment's value; one that is not set stays as it is
+    if isinstance(v, str): return ENV.sub(lambda m: os.environ.get(m[1], m[0]), v)
+    if isinstance(v, list): return [expand(x) for x in v]
+    if isinstance(v, dict): return {expand(k): expand(x) for k, x in v.items()}
+    return v
+
+
+def info_plist(name, props, sdkplatform='iphoneos'):   # XcodeGen's generated Info.plist: its defaults, then the target's properties
+    p = {'CFBundleDevelopmentRegion': '$(DEVELOPMENT_LANGUAGE)', 'CFBundleExecutable': '$(EXECUTABLE_NAME)', 'CFBundleIdentifier': '$(PRODUCT_BUNDLE_IDENTIFIER)',
+         'CFBundleInfoDictionaryVersion': '6.0', 'CFBundleName': '$(PRODUCT_NAME)', 'CFBundlePackageType': '$(PRODUCT_BUNDLE_PACKAGE_TYPE)',
+         'CFBundleShortVersionString': '1.0', 'CFBundleVersion': '1', 'LSRequiresIPhoneOS': True, 'UIRequiredDeviceCapabilities': ['arm64']}
+    p.update(props)
+    return p
+
+
+def main(argv):
+    if not argv or argv[0] != 'generate':
+        if argv and argv[0] in ('--version', 'version'): print('Version: 2.44.1 (nxnative Linux stand-in)'); return 0
+        nxn.die('usage: xcodegen generate [-q] [--spec project.yml] [--project <dir>]', 2)
+    spec, out, i = Path('project.yml'), None, 1
+    while i < len(argv):
+        if argv[i] in ('-s', '--spec'): spec = Path(argv[i + 1]); i += 2
+        elif argv[i] in ('-p', '--project'): out = Path(argv[i + 1]); i += 2
+        else: i += 1
+    root = spec.resolve().parent
+    y = expand(yaml.safe_load(spec.read_text()))
+    name = y['name']
+    targets = [(k, t) for k, t in (y.get('targets') or {}).items() if t.get('type') == 'application']
+    if len(targets) != 1: nxn.die(f'{spec}: the Linux stand-in builds exactly one application target ({len(targets)} found)')
+    tname, t = targets[0]
+    opts = y.get('options') or {}
+    platform = t.get('platform', 'iOS')
+    if platform != 'iOS': nxn.die(f'{spec}: target {tname} is for {platform}; the Linux stand-in builds iOS apps')
+    deploy = str((t.get('deploymentTarget') or (opts.get('deploymentTarget') or {}).get(platform) or '')).strip()
+    sources = []
+    for s in t.get('sources') or []:
+        s = {'path': s} if isinstance(s, str) else dict(s)
+        s['abs'] = str((root / s['path']).resolve()) if not os.path.isabs(s['path']) else s['path']
+        sources.append(s)
+    info = t.get('info') or {}
+    if info.get('path'):
+        ip = root / info['path']; ip.parent.mkdir(parents=True, exist_ok=True)
+        with open(ip, 'wb') as f: plistlib.dump(info_plist(tname, info.get('properties') or {}), f)
+    proj = (out or root) / f'{name}.xcodeproj'; proj.mkdir(parents=True, exist_ok=True)
+    desc = {'name': name, 'root': str(root), 'target': tname, 'platform': platform, 'deploymentTarget': deploy,
+            'configFiles': {k: str((root / v).resolve()) for k, v in (y.get('configFiles') or {}).items()},
+            'projectSettings': (y.get('settings') or {}), 'settings': t.get('settings') or {}, 'sources': sources,
+            'info': str((root / info['path']).resolve()) if info.get('path') else None,
+            'postBuildScripts': [s.get('name', '') for s in t.get('postBuildScripts') or []]}
+    (proj / 'nxn_project.json').write_text(json.dumps(desc, indent=1))
+    if '-q' not in argv: print(f'Created project at {proj}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

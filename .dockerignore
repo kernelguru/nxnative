@@ -1,0 +1,7 @@
+# The Linux builder's image (linux/docker/Dockerfile): everything but build products
+dm/host/gen
+dm/host/dmhost*
+dm/ios/Gen
+dm/ios/build
+**/__pycache__
+**/*.pyc

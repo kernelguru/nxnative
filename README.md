@@ -45,6 +45,7 @@ Community projects build on nxnative with tools to turn your games into apps for
 - **Mac:** Apple silicon, macOS 26.6 or later. Building games requires Xcode 27.2.
 - **iPhone:** A17 Pro chip or later, with iOS 26 or later.
 - **iPad:** M1 chip or later, with iPadOS 26 or later.
+- **Linux (experimental):** iOS IPAs can also be built on Linux in Docker, with a web interface; some games still need a Mac. See [Building IPAs on Linux](linux/README.md).
 
 The games' textures are BC-compressed, which older iPhones cannot read. Switch 2 builds are tested on the Mac; check each game's note for device-specific validation.
 

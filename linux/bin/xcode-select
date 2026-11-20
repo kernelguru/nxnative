@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+# xcode-select for the Linux build: -p prints the installed Xcode's developer folder (linux/setup/setup.py installs it); nothing can be switched.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn
+
+if sys.argv[1:2] in (['-p'], ['--print-path']):
+    if not nxn.DEVELOPER.is_dir(): nxn.die(f'no Xcode installed in {nxn.XCODE}: linux/setup/setup.py xcode <Xcode.xip>', 2)
+    print(nxn.DEVELOPER); sys.exit(0)
+if sys.argv[1:2] in (['-v'], ['--version']): print('xcode-select version 2412 (nxnative Linux stand-in)'); sys.exit(0)
+nxn.die('xcode-select: only -p works on Linux (the toolchain is linux/setup/setup.py\'s)', 2)

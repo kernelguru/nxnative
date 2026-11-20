@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+# clang for an Apple target, as `xcrun -sdk <sdk> clang` gives it on a Mac: the distribution's clang with the SDK as sysroot, the Apple target, and lld as the Mach-O linker.
+# The SDK is NXN_SDK (set by xcrun) or the one -isysroot names; -arch / -target / --target on the command line are kept, else the target is arm64-apple-<os> at the SDK's version
+# or the -m<os>-version-min= given. Xcode's own compiler runtime (libclang_rt.<os>.a) is linked when the command links, as Apple's clang does.
+import os, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn
+
+args = sys.argv[1:]
+sdk = os.environ.get('NXN_SDK')
+for i, a in enumerate(args):
+    if a == '-isysroot' and i + 1 < len(args): sdk = nxn.sdk_of_path(args[i + 1]) or sdk
+    elif a.startswith('-isysroot') and len(a) > 9: sdk = nxn.sdk_of_path(a[9:]) or sdk
+sdk = nxn.sdk_name(sdk)
+try:
+    s = nxn.sdk_settings(sdk)
+    cc = nxn.llvm('clang++' if os.environ.get('NXN_CC_NAME', '') in ('clang++', 'c++', 'g++') else 'clang')
+except nxn.Missing as e: nxn.die(str(e), 72)
+osn = nxn.SDKS[sdk][2]
+pre = []
+if not any(a == '-isysroot' or a.startswith('-isysroot') for a in args): pre += ['-isysroot', s['path']]
+if not any(a in ('-target', '-arch') or a.startswith('--target') for a in args):
+    mins = [a.split('=', 1)[1] for a in args if a.startswith(('-mios-version-min=', '-miphoneos-version-min=', '-mmacosx-version-min=', '-mmacos-version-min='))]
+    pre += ['--target=arm64-apple-' + osn + (mins[-1] if mins else s['version'])]
+linking = not any(a in ('-c', '-S', '-E', '-M', '-MM', '-fsyntax-only', '--version', '-v', '-###') for a in args)
+post = []
+if linking:
+    pre += ['-fuse-ld=lld']
+    rt = nxn.clang_rt(osn)
+    if rt: post += [str(rt)]
+os.execv(cc, [cc, *pre, *args, *post])

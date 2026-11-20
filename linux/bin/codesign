@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+# codesign for the Linux build: the ad-hoc signature build_ipa.sh gives the unsigned IPA's executable, so its entitlements reach the sideloader, made with ldid
+# (ProcursusTeam/ldid, in the Docker image) or, without it, rcodesign (apple-codesign).
+#   codesign --force --sign - [--entitlements <plist>] <file>     ad-hoc only: an identity needs Apple's keychain, which Linux does not have
+#   codesign -d --entitlements - <file>                           prints the entitlements; exit 1 when there are none
+import os, shutil, subprocess, sys
+
+
+def main(a):
+    sign, ent, show, files, i = None, None, False, [], 0
+    while i < len(a):
+        x = a[i]
+        if x in ('-s', '--sign'): sign = a[i + 1]; i += 2
+        elif x == '--entitlements': ent = a[i + 1]; i += 2
+        elif x in ('-d', '--display'): show = True; i += 1
+        elif x in ('--options', '--identifier', '-i', '--prefix', '--keychain', '--requirements', '-r'): i += 2
+        elif x.startswith('-'): i += 1
+        else: files.append(x); i += 1
+    ldid, rcs = shutil.which('ldid'), shutil.which('rcodesign')
+    if not files: print('usage: codesign --force --sign - [--entitlements e.plist] <file>', file=sys.stderr); return 1
+    if show:
+        if ldid: r = subprocess.run([ldid, '-e', files[0]], capture_output=True, text=True)
+        elif rcs: r = subprocess.run([rcs, 'print-signature-info', files[0]], capture_output=True, text=True)
+        else: print('codesign: neither ldid nor rcodesign is installed', file=sys.stderr); return 1
+        out = r.stdout.strip()
+        if ent == '-' and out: print(out)
+        return 0 if r.returncode == 0 and (out if ent == '-' else True) else 1
+    if sign != '-':
+        print(f'codesign: only ad-hoc signatures (--sign -) can be made on Linux, not with identity {sign!r}', file=sys.stderr); return 1
+    for f in files:
+        if ldid: cmd = [ldid, f'-S{ent}' if ent else '-S', f]
+        elif rcs: cmd = [rcs, 'sign', *(['--entitlements-xml-file', ent] if ent else []), f]
+        else: print('codesign: neither ldid nor rcodesign is installed', file=sys.stderr); return 1
+        r = subprocess.run(cmd)
+        if r.returncode: return r.returncode
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

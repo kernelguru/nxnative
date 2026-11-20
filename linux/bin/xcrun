@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+# xcrun for the Linux build (linux/README.md): what the repository's scripts ask of xcrun, answered from the toolchain folder linux/setup/setup.py fills.
+#   xcrun [-sdk <sdk>] --show-sdk-path | --show-sdk-version | --show-sdk-build-version | --show-sdk-platform-path
+#   xcrun [-sdk <sdk>] -f | --find <tool>     the path of the tool (Metal tools: their Wine wrapper in linux/libexec/metal)
+#   xcrun [-sdk <sdk>] <tool> <arguments>     runs it: Metal tools under Wine (linux/libexec/wine-tool), clang / swiftc / ld for the SDK, other LLVM tools as they are
+import os, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn
+
+METAL_DIR = nxn.LINUX / 'libexec/metal'
+LLVM = {'ar': 'llvm-ar', 'nm': 'llvm-nm', 'lipo': 'llvm-lipo', 'otool': 'llvm-otool', 'objdump': 'llvm-objdump', 'strip': 'llvm-strip', 'dsymutil': 'dsymutil',
+        'ld': 'ld64.lld', 'libtool': 'llvm-libtool-darwin', 'size': 'llvm-size', 'ranlib': 'llvm-ranlib', 'install_name_tool': 'llvm-install-name-tool'}
+CLANG = {'clang', 'clang++', 'cc', 'c++', 'gcc', 'g++'}
+
+
+def tool_path(sdk, tool):
+    if (METAL_DIR / tool).exists(): return METAL_DIR / tool
+    if tool in CLANG or tool == 'swiftc' or tool == 'swift': return nxn.LINUX / 'libexec/darwin-cc' if tool != 'swiftc' else nxn.LINUX / 'libexec/darwin-swiftc'
+    return Path(nxn.llvm(LLVM.get(tool, tool)))
+
+
+def main(argv):
+    sdk, i = None, 0
+    while i < len(argv) and argv[i].startswith('-'):
+        a = argv[i]
+        if a in ('-sdk', '--sdk') and i + 1 < len(argv): sdk = argv[i + 1]; i += 2; continue
+        if a.startswith('--sdk='): sdk = a.split('=', 1)[1]; i += 1; continue
+        if a in ('-v', '--verbose', '-l', '--log', '-n', '--no-cache', '-k', '--kill-cache', '-r', '--run'): i += 1; continue
+        if a in ('--toolchain',) and i + 1 < len(argv): i += 2; continue
+        break
+    rest = argv[i:]
+    try:
+        name = nxn.sdk_name(sdk or os.environ.get('SDKROOT'))
+        if rest and rest[0] in ('--show-sdk-path', '--show-sdk-version', '--show-sdk-build-version', '--show-sdk-platform-path', '--show-sdk-platform-version'):
+            s = nxn.sdk_settings(name)
+            print({'--show-sdk-path': s['path'], '--show-sdk-version': s['version'], '--show-sdk-platform-version': s['version'],
+                   '--show-sdk-build-version': s['build'], '--show-sdk-platform-path': s['platform_path']}[rest[0]])
+            return 0 if (s['build'] or rest[0] != '--show-sdk-build-version') else 1
+        if not rest: nxn.die('usage: xcrun [-sdk <sdk>] (--show-sdk-path | -f <tool> | <tool> <arguments>)', 2)
+        if rest[0] in ('-f', '--find'):
+            if len(rest) < 2: nxn.die('xcrun -f: no tool named', 2)
+            p = tool_path(name, rest[1])
+            if p.parent == METAL_DIR: nxn.metal_tool(rest[1])   # fails here, with the reason, when the Metal tools are not installed
+            print(p); return 0
+        p = tool_path(name, rest[0])
+    except nxn.Missing as e:
+        nxn.die(str(e), 72)
+    env = dict(os.environ, NXN_SDK=name)
+    if p.parent == nxn.LINUX / 'libexec' and p.name in ('darwin-cc', 'darwin-swiftc'):
+        env['NXN_CC_NAME'] = rest[0]
+    os.execve(str(p), [str(p), *rest[1:]], env)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

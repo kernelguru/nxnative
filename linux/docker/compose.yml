@@ -1,0 +1,24 @@
+# docker compose -f linux/docker/compose.yml up -d --build   (from the repository root)
+services:
+  nxnative:
+    build:
+      context: ../..
+      dockerfile: linux/docker/Dockerfile
+    image: nxnative-linux
+    platform: linux/amd64
+    container_name: nxnative
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data            # toolchain (Xcode SDK, Metal tools, Wine prefix), keys, game files, builds and IPAs
+    environment:
+      # NXN_PASSWORD: the web interface asks for it (user "nxnative"); leave it empty only behind a reverse proxy that authenticates
+      - NXN_PASSWORD=
+      # RomM: the web interface's import. A client API token (rmm_...) or a username and password
+      - ROMM_URL=
+      - ROMM_TOKEN=
+      - ROMM_USER=
+      - ROMM_PASSWORD=
+      # where finished IPAs are also copied (optional, e.g. a folder a Feather / AltStore source serves)
+      - NXN_IPA_EXPORT=

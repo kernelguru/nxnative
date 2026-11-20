@@ -746,7 +746,8 @@ def can_clone(d):   # whether this volume supports APFS clones (nx_extract uses 
     a, b = d / '.clone_test', d / '.clone_test2'
     try:
         a.write_bytes(b'x'); rmtree(b)
-        return ctypes.CDLL(None, use_errno=True).clonefile(str(a).encode(), str(b).encode(), 0) == 0
+        clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)   # macOS's; elsewhere (Linux) nx_extract writes full copies
+        return clonefile is not None and clonefile(str(a).encode(), str(b).encode(), 0) == 0
     finally:
         rmtree(a); rmtree(b)
 
@@ -1704,7 +1705,8 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
     return out
 
 
-def apple_silicon():   # hw.optional.arm64 is 1 on Apple silicon (for a Python under Rosetta too); an Intel Mac has no such key
+def apple_silicon():   # hw.optional.arm64 is 1 on Apple silicon (for a Python under Rosetta too); an Intel Mac has no such key, and Linux (linux/README.md) no Mac host at all
+    if sys.platform != 'darwin': return False
     return subprocess.run(['sysctl', '-n', 'hw.optional.arm64'], capture_output=True, text=True).stdout.strip() == '1'
 
 
@@ -1722,11 +1724,16 @@ def decoder_host_key(host):
     return None
 
 
+MAC_ONLY = ('{what}, which runs the game\'s own arm64 code on macOS with Metal: this game builds only on a Mac with Apple silicon, not on {platform} (linux/README.md lists what the Linux build '
+            'cannot do)').replace('{platform}', sys.platform.capitalize())
+
+
 def build_mac_host(repo, out, env, logs, g):
     """The Mac host for the profile, built into out: dm/host's per-game host (make gen/<id>/dmhost: one object per source on every core, kept for the next build) copied with its dSYM,
     since make takes no target path with spaces and dm/host/dmhost may be another build's.
     Reused when the compile lines and their inputs (the source files of HOST_DIRS, the chain header dm/gfx/nvn/dmsh_chain.h among them, the profile header make generates, libvpx, dav1d and the third-party headers, the compiler
     and the macOS SDK) are as at the last build into out. The host runs the game's own arm64 code natively, so an Intel Mac stops here (GitHub issue #54)"""
+    if sys.platform != 'darwin': raise BuildError(MAC_ONLY.format(what='this step boots the game in the Mac host'))
     if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, and this Mac has an Intel processor')
     host = repo / 'dm/host'
     run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a', 'gen/dav1d/libdav1d.a', 'host_msl'], logs / 'mac_host_make.log', env=env, cwd=host)
@@ -3438,6 +3445,10 @@ def main(args=None):
     if gfx == 'vulkan': say(f'Vulkan game ({src["graphics"][1]}): vk_shaders.py translates the shaders instead of the NVN shader chain')
     if gfx == 'gl': say(f'OpenGL game ({src["graphics"][1]}): gl_shaders.py translates the shaders instead of the NVN shader chain')
     if seen_shaders and gfx != 'nvn': raise BuildError(f'--seen-shaders is for NVN games: this one is {gfx}, whose shaders build whole in minutes')
+    if sys.platform != 'darwin':   # the steps that boot the game in the Mac host, known now: say so before the minutes of the rewrite and the shader split (build_mac_host stops any other)
+        boots = [w for on, w in ((glslc, 'its run-time shaders are captured by booting it in the Mac host'), (vkcap or glcap, 'the shaders it generates are captured by booting it in the Mac host'),
+                                 (uses_jit(game / 'ExeFS') and not mac, 'its nn::jit code is captured by booting it in the Mac host')) if on]
+        if boots: raise BuildError(MAC_ONLY.format(what='; '.join(boots)))
     if gfx == 'nvn': check_metal(py, repo, env)   # before the captures and the shader split, which take minutes
     for on, k in ((glslc, 'glslc_capture'), (vkcap, 'vk_capture'), (glcap, 'gl_capture'), (uedec, 'ue_decode'), (gfx == 'nvn' and src['oodle_packs'][0], 'oodle_packs'), (gfx == 'nvn' and src['ue_legacy'][0], 'ue_legacy')):
         if on: say(src[k][1])

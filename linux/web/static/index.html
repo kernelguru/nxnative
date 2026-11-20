@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nxnative · Linux builder</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262a33; --text:#e6e8ec; --dim:#8b919c; --acc:#e4002b; --ok:#38b26b; --warn:#e0a526; --bad:#e5484d; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f5f6f8; --panel:#fff; --line:#e2e4e8; --text:#16181d; --dim:#5d6470; } }
+  * { box-sizing:border-box } body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text) }
+  header { display:flex; align-items:center; gap:18px; padding:14px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2 }
+  header b { font-size:16px } header b span { color:var(--acc) }
+  nav button { background:none; border:0; color:var(--dim); font:inherit; padding:6px 10px; border-radius:6px; cursor:pointer }
+  nav button.on { color:var(--text); background:var(--panel) }
+  main { max-width:1100px; margin:0 auto; padding:20px }
+  section { display:none } section.on { display:block }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px }
+  .card h3 { margin:0 0 10px; font-size:15px }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0 }
+  .dim { color:var(--dim) } .ok { color:var(--ok) } .bad { color:var(--bad) } .warn { color:var(--warn) }
+  button.b, label.b { background:var(--acc); color:#fff; border:0; border-radius:7px; padding:7px 13px; font:inherit; cursor:pointer; display:inline-block }
+  button.s { background:transparent; color:var(--text); border:1px solid var(--line); border-radius:7px; padding:5px 10px; font:inherit; cursor:pointer }
+  button:disabled { opacity:.5; cursor:default }
+  input[type=text], input[type=password], select { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:7px; padding:6px 9px; font:inherit; min-width:220px }
+  input[type=file] { display:none }
+  table { width:100%; border-collapse:collapse } td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top } th { color:var(--dim); font-weight:500 }
+  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:12px; border:1px solid var(--line) }
+  .log { background:#0a0b0e; color:#d6d9df; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; padding:10px; border-radius:8px; height:420px; overflow:auto; white-space:pre-wrap }
+  .log .red { color:#ff6b6b } .log .stage { color:#7cc4ff } .log .cmd { color:#888 }
+  progress { width:260px; height:10px } .bar { display:flex; gap:10px; align-items:center }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:10px }
+  .rom { border:1px solid var(--line); border-radius:8px; padding:8px; display:flex; gap:8px; align-items:flex-start; cursor:pointer }
+  .rom.sel { border-color:var(--acc) } .rom img { width:48px; height:48px; object-fit:cover; border-radius:5px; background:var(--line) }
+  .up { font-size:12px }
+</style>
+</head>
+<body>
+<header>
+  <b>nx<span>native</span> · Linux builder</b>
+  <nav><button data-tab="setup">Setup</button><button data-tab="games">Games</button><button data-tab="builds">Builds</button></nav>
+  <span id="ready" class="pill"></span>
+</header>
+<main>
+
+<section id="setup">
+  <div class="card"><h3>Toolchain</h3><div id="st">loading…</div></div>
+  <div class="card">
+    <h3>1 · Xcode (.xip)</h3>
+    <p class="dim">Your own Xcode download from developer.apple.com (the version nxnative names in dm/gfx/tools/own_compilers.py). Only the iOS / macOS SDKs and the Swift libraries are kept.</p>
+    <div class="row"><label class="b">Choose Xcode .xip<input type="file" accept=".xip" data-setup="xcode"></label><span class="up" id="up-xcode"></span></div>
+  </div>
+  <div class="card">
+    <h3>2 · Metal Developer Tools for Windows</h3>
+    <p class="dim">Apple's installer (.exe) from developer.apple.com, or a .zip of <code>C:\Program Files\Metal Developer Tools</code> from a Windows PC. Runs under Wine.</p>
+    <div class="row"><label class="b">Choose installer / zip<input type="file" accept=".exe,.msi,.zip" data-setup="metal"></label><span class="up" id="up-metal"></span>
+      <button class="s" onclick="post('/api/setup/wine').then(refresh)">Create Wine prefix</button>
+      <button class="s" onclick="post('/api/setup/chain').then(refresh)">Write chain lock</button></div>
+  </div>
+  <div class="card">
+    <h3>3 · Keys and fonts</h3>
+    <div class="row"><label class="b">prod.keys<input type="file" data-setup="keys"></label><span class="up" id="up-keys"></span>
+      <span class="dim">Stored with mode 600, never shown or logged.</span></div>
+    <div class="row"><label class="b">Fonts (.ttf)<input type="file" accept=".ttf" multiple data-setup="font"></label><span class="up" id="up-font"></span>
+      <span class="dim">Arial Unicode.ttf and Arial Rounded Bold.ttf from a Mac (/System/Library/Fonts/Supplemental). Optional: stand-ins otherwise.</span></div>
+  </div>
+  <div class="card">
+    <h3>RomM and export</h3>
+    <div class="row"><input type="text" id="romm_url" placeholder="https://romm.example.lan"><input type="password" id="romm_token" placeholder="client API token (rmm_…)"></div>
+    <div class="row"><input type="text" id="romm_user" placeholder="or user"><input type="password" id="romm_password" placeholder="password"></div>
+    <div class="row"><input type="text" id="ipa_export" placeholder="copy IPAs to (folder in the container, optional)"><button class="b" onclick="saveSettings()">Save</button><span id="set-note" class="dim"></span></div>
+  </div>
+</section>
+
+<section id="games">
+  <div class="card">
+    <h3>Import from RomM</h3>
+    <div class="row"><input type="text" id="q" placeholder="search Switch games" onkeydown="if(event.key==='Enter')search()"><button class="b" onclick="search()">Search</button><span id="rs" class="dim"></span></div>
+    <div class="grid" id="roms"></div>
+    <div class="row" id="imp" style="display:none"><input type="text" id="imp_name" placeholder="game folder"><button class="b" onclick="importRoms()">Import selected</button>
+      <span class="dim">Base game, update and DLC can go into the same folder.</span></div>
+  </div>
+  <div class="card">
+    <h3>Game folders</h3>
+    <div class="row"><input type="text" id="newgame" placeholder="new folder (e.g. Mario Kart World)"><button class="s" onclick="newGame()">Create</button></div>
+    <table><thead><tr><th>Folder</th><th>Files</th><th></th></tr></thead><tbody id="gl"></tbody></table>
+  </div>
+</section>
+
+<section id="builds">
+  <div class="card">
+    <h3>New build</h3>
+    <div class="row"><select id="b_game"></select>
+      <select id="b_lang"><option value="">language: game default</option><option>en-US</option><option>en-GB</option><option>de</option><option>fr</option><option>es</option><option>it</option><option>nl</option><option>ja</option><option>ko</option><option>zh-Hans</option><option>zh-Hant</option></select>
+      <select id="b_romfs"><option value="">game files in the IPA</option><option value="separate">game files separate (push later)</option></select></div>
+    <div class="row"><label><input type="checkbox" id="b_fps"> frame-rate counter</label>
+      <label><input type="checkbox" id="b_keep" checked> keep extracted files (faster next build)</label>
+      <label><input type="checkbox" id="b_shfiles"> shader library as files (AltServer)</label>
+      <input type="text" id="b_gpu" placeholder="--gpu (empty: profile default, none: no archive)" style="min-width:300px"></div>
+    <div class="row"><button class="b" onclick="build()">Build IPA</button><span id="bnote" class="dim"></span></div>
+  </div>
+  <div class="card"><h3>Jobs</h3><table><tbody id="jl"></tbody></table></div>
+  <div class="card" id="jobcard" style="display:none">
+    <h3 id="jt"></h3>
+    <div class="bar"><progress id="jp" max="1" value="0"></progress><span id="js" class="dim"></span><button class="s" id="jstop">Stop</button></div>
+    <div class="log" id="log"></div>
+  </div>
+  <div class="card"><h3>IPAs</h3><table><tbody id="il"></tbody></table></div>
+</section>
+</main>
+<script>
+const $ = s => document.querySelector(s), esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const gb = n => n == null ? '' : n >= 2**30 ? (n/2**30).toFixed(2)+' GB' : (n/2**20).toFixed(1)+' MB';
+async function api(path, opt={}) { const r = await fetch(path, opt); const t = await r.text(); let j; try { j = JSON.parse(t) } catch { j = t }
+  if (!r.ok) throw new Error((j && j.detail) || t || r.status); return j }
+const post = (p, body) => api(p, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body||{})});
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => tab(b.dataset.tab));
+function tab(t) { document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab===t)); document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id===t)); location.hash = t; refresh() }
+
+function upload(url, file, el) { return new Promise((res, rej) => { const x = new XMLHttpRequest(); x.open('PUT', url);
+  x.upload.onprogress = e => el.textContent = `${file.name}: ${Math.round(100*e.loaded/e.total)} % of ${gb(e.total)}`;
+  x.onload = () => { if (x.status < 300) { el.textContent = `${file.name}: uploaded`; res(JSON.parse(x.responseText||'{}')) } else { el.textContent = `${file.name}: ${x.responseText}`; rej(x.responseText) } };
+  x.onerror = () => { el.textContent = 'upload failed'; rej() }; x.send(file) }) }
+document.querySelectorAll('input[data-setup]').forEach(i => i.onchange = async () => { const k = i.dataset.setup;
+  for (const f of i.files) { try { const r = await upload(`/api/setup/${k}/${encodeURIComponent(f.name)}`, f, $('#up-'+k)); if (r.id) { tab('builds'); openJob(r.id) } } catch {} }
+  i.value = ''; refresh() });
+
+async function refresh() {
+  try { const s = await api('/api/status');
+    $('#ready').textContent = s.ready ? 'ready' : 'setup needed'; $('#ready').className = 'pill ' + (s.ready ? 'ok' : 'warn');
+    const y = (v, t) => `<span class="${v ? 'ok' : 'bad'}">${v ? '✓' : '✗'}</span> ${t}`;
+    $('#st').innerHTML = [y(s.xcode.ios_sdk, `Xcode ${esc(s.xcode.version)||''} · iOS SDK ${esc(s.xcode.ios_sdk)||'missing'} · macOS SDK ${esc(s.xcode.macos_sdk)||'missing'}`),
+      y(s.xcode.swift_libs, 'Swift libraries of the Xcode toolchain'), y(s.metal.installed, `Metal tools: ${esc(s.metal.tools.join(', '))||'missing'}`),
+      y(s.metal.prefix, 'Wine prefix'), y(s.chain, 'translation chain lock for these tools'), y(s.keys, 'prod.keys'),
+      y(s.fonts.std.own && s.fonts.letters.own, 'Apple fonts' + (s.fonts.std.own ? '' : ' (stand-ins in use)')),
+      y(Object.values(s.tools).every(Boolean), 'tools: ' + Object.entries(s.tools).map(([k,v]) => v ? k : `<b class="bad">${k}</b>`).join(', '))].join('<br>') } catch (e) { $('#st').textContent = e }
+  const t = location.hash.slice(1) || 'setup';
+  if (t === 'setup') { const c = await api('/api/settings'); for (const k of ['romm_url','romm_user','ipa_export']) $('#'+k).value = c[k];
+    $('#romm_token').placeholder = c.romm_token_set ? 'token stored (type to replace, - to clear)' : 'client API token (rmm_…)';
+    $('#set-note').textContent = c.from_env.length ? 'set in the environment: ' + c.from_env.join(', ') : '' }
+  if (t === 'games' || t === 'builds') { const g = await api('/api/games');
+    $('#gl').innerHTML = g.map(x => `<tr><td><b>${esc(x.name)}</b><br><span class="dim">${gb(x.size)}${x.build_folders.length ? ' · build folder kept' : ''}</span></td>
+      <td>${x.files.map(f => `${esc(f.name)} <span class="dim">${gb(f.size)}</span> <button class="s" onclick="delFile('${esc(x.name)}','${esc(f.name)}')">✕</button>`).join('<br>') || '<span class="dim">empty</span>'}
+      <div class="up" id="gu-${esc(x.name)}"></div></td>
+      <td><label class="s" style="border:1px solid var(--line);border-radius:7px;padding:5px 10px;cursor:pointer">Add files<input type="file" multiple accept=".nsp,.nsz,.xci,.xcz,.nup" onchange="addFiles('${esc(x.name)}', this)"></label>
+      <button class="s" onclick="buildOf('${esc(x.name)}')">Build</button> <button class="s" onclick="delGame('${esc(x.name)}', true)">Clear build folder</button> <button class="s" onclick="delGame('${esc(x.name)}')">Delete</button></td></tr>`).join('');
+    const sel = $('#b_game'), cur = sel.value; sel.innerHTML = g.map(x => `<option>${esc(x.name)}</option>`).join(''); if (cur) sel.value = cur }
+  if (t === 'builds') { const j = await api('/api/jobs');
+    $('#jl').innerHTML = j.map(x => `<tr onclick="openJob('${x.id}')" style="cursor:pointer"><td>${esc(x.title)}</td><td><span class="pill ${x.state==='done'?'ok':x.state==='failed'?'bad':x.state==='running'?'warn':''}">${x.state}</span></td>
+      <td class="dim">${x.stage ? esc(x.stage.name||'') : ''} ${x.error ? '<span class="bad">'+esc(x.error)+'</span>' : ''}</td><td class="dim">${x.id}</td></tr>`).join('') || '<tr><td class="dim">no jobs yet</td></tr>';
+    const i = await api('/api/ipas'); $('#il').innerHTML = i.map(x => `<tr><td><a href="/api/ipa/${encodeURIComponent(x.name)}">${esc(x.name)}</a></td><td class="dim">${gb(x.size)}</td>
+      <td class="dim">${new Date(x.time*1000).toLocaleString()}</td><td><button class="s" onclick="delIpa('${esc(x.name)}')">Delete</button></td></tr>`).join('') || '<tr><td class="dim">none yet</td></tr>' }
+}
+async function saveSettings() { const b = {}; for (const k of ['romm_url','romm_user','ipa_export','romm_token','romm_password']) b[k] = $('#'+k).value;
+  await post('/api/settings', b); $('#romm_token').value = $('#romm_password').value = ''; $('#set-note').textContent = 'saved'; refresh() }
+async function newGame() { await post('/api/games', {name: $('#newgame').value}); $('#newgame').value = ''; refresh() }
+async function addFiles(g, inp) { const el = document.getElementById('gu-'+g); for (const f of inp.files) { try { await upload(`/api/games/${encodeURIComponent(g)}/files/${encodeURIComponent(f.name)}`, f, el) } catch {} } refresh() }
+async function delFile(g, f) { if (confirm(`Delete ${f}?`)) { await api(`/api/games/${encodeURIComponent(g)}/files/${encodeURIComponent(f)}`, {method:'DELETE'}); refresh() } }
+async function delGame(g, work) { if (confirm(work ? `Delete the build folder of ${g} (extracted files, shader cache)?` : `Delete ${g} with all its files?`)) { await api(`/api/games/${encodeURIComponent(g)}${work?'?work_only=true':''}`, {method:'DELETE'}); refresh() } }
+async function delIpa(n) { if (confirm(`Delete ${n}?`)) { await api(`/api/ipa/${encodeURIComponent(n)}`, {method:'DELETE'}); refresh() } }
+function buildOf(g) { tab('builds'); setTimeout(() => $('#b_game').value = g, 300) }
+
+let picked = new Map();
+async function search() { $('#rs').textContent = 'searching…'; picked.clear(); $('#imp').style.display = 'none';
+  try { const r = await api('/api/romm/search?q=' + encodeURIComponent($('#q').value)); $('#rs').textContent = `${r.length} found`;
+    $('#roms').innerHTML = r.map(x => `<div class="rom" data-id="${x.id}" data-name="${esc(x.name)}"><img src="${x.cover && x.cover.startsWith('http') ? esc(x.cover) : ''}" alt=""><div><b>${esc(x.name)}</b><br>
+      <span class="dim">${gb(x.size)} · ${x.files.length || 1} file(s)</span><br><span class="dim up">${x.files.map(f => esc(f.name)).join('<br>')}</span></div></div>`).join('');
+    document.querySelectorAll('.rom').forEach(d => d.onclick = () => { const id = +d.dataset.id; if (picked.has(id)) picked.delete(id); else picked.set(id, d.dataset.name);
+      d.classList.toggle('sel'); $('#imp').style.display = picked.size ? 'flex' : 'none'; if (!$('#imp_name').value && picked.size) $('#imp_name').value = d.dataset.name.replace(/[^\w .,()\[\]&+'!-]/g, '').trim() })
+  } catch (e) { $('#rs').textContent = e.message } }
+async function importRoms() { try { const j = await post('/api/romm/import', {ids: [...picked.keys()], game: $('#imp_name').value}); tab('builds'); openJob(j.id) } catch (e) { alert(e.message) } }
+
+async function build() { const o = {game: $('#b_game').value, language: $('#b_lang').value, romfs: $('#b_romfs').value, gpu: $('#b_gpu').value.trim(),
+    show_fps: $('#b_fps').checked, keep_extracted: $('#b_keep').checked, shader_files: $('#b_shfiles').checked || null};
+  try { const j = await post('/api/builds', o); $('#bnote').textContent = ''; openJob(j.id); refresh() } catch (e) { $('#bnote').textContent = e.message } }
+
+let cur = null, off = 0, timer = null;
+function openJob(id) { cur = id; off = 0; $('#log').innerHTML = ''; $('#jobcard').style.display = 'block'; $('#jstop').onclick = () => post(`/api/jobs/${id}/stop`); clearTimeout(timer); poll() }
+async function poll() { if (!cur) return; const id = cur;
+  try { const r = await api(`/api/jobs/${id}/log?offset=${off}`); if (id !== cur) return; off = r.offset; const log = $('#log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+    for (const e of r.events) { let cls = '', txt = '';
+      if (e.ev === 'stage') { cls = 'stage'; txt = `▶ ${e.k||''}/${e.n||''} ${e.name}${e.step ? ' · '+e.step : ''}` }
+      else if (e.ev === 'stage_end') { cls = e.ok ? 'stage' : 'red'; txt = `${e.ok ? '✓' : '✗'} ${e.name}${e.summary ? ': '+e.summary : ''} (${Math.round(e.elapsed||0)} s)` }
+      else if (e.ev === 'progress' || e.ev === 'step') { if (e.total) { $('#jp').max = e.total; $('#jp').value = e.done||0 } $('#js').textContent = `${e.name||''} ${e.step||''} ${e.total ? (e.unit==='B' ? gb(e.done)+' / '+gb(e.total) : (e.done||0)+' / '+e.total+' '+(e.unit||'')) : ''}`; continue }
+      else if (e.ev === 'cmd') { cls = 'cmd'; txt = '$ ' + e.msg } else { txt = e.msg ?? JSON.stringify(e); if (/\[RED\]|error/i.test(txt)) cls = 'red' }
+      const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = txt; log.appendChild(d) }
+    if (atEnd) log.scrollTop = log.scrollHeight;
+    $('#jt').textContent = `${r.info.title} · ${r.state}${r.info.error ? ' · ' + r.info.error : ''}`; $('#jstop').disabled = !['running','queued'].includes(r.state);
+    if (['running','queued'].includes(r.state) || r.events.length) timer = setTimeout(poll, 1500); else refresh()
+  } catch (e) { timer = setTimeout(poll, 4000) } }
+tab(location.hash.slice(1) || 'setup'); setInterval(() => { if ((location.hash.slice(1)) === 'builds' && !document.hidden) refresh() }, 8000);
+</script>
+</body>
+</html>

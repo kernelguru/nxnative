@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+# sips for the Linux build, the conversions the repository's scripts ask of it, with Pillow:
+#   sips -s format <png|jpeg|bmp|tiff> [-z <height> <width>] <input> --out <output>
+#   sips -g pixelWidth -g pixelHeight <input>
+import sys
+try: from PIL import Image
+except ImportError: print('sips needs Pillow (pip install pillow; the Docker image has it)', file=sys.stderr); sys.exit(1)
+
+FORMATS = {'png': 'PNG', 'jpeg': 'JPEG', 'jpg': 'JPEG', 'bmp': 'BMP', 'tiff': 'TIFF', 'gif': 'GIF'}
+
+
+def main(a):
+    fmt, size, out, src, props, i = None, None, None, None, [], 0
+    while i < len(a):
+        if a[i] in ('-s', '--setProperty') and a[i + 1] == 'format': fmt = FORMATS[a[i + 2].lower()]; i += 3
+        elif a[i] in ('-z', '--resampleHeightWidth'): size = (int(a[i + 2]), int(a[i + 1])); i += 3
+        elif a[i] in ('-Z', '--resampleHeightWidthMax'): size = ('max', int(a[i + 1])); i += 2
+        elif a[i] in ('-g', '--getProperty'): props.append(a[i + 1]); i += 2
+        elif a[i] in ('-o', '--out'): out = a[i + 1]; i += 2
+        else: src = a[i]; i += 1
+    if not src: print('usage: sips -s format png [-z h w] <input> --out <output>', file=sys.stderr); return 1
+    im = Image.open(src)
+    if props:
+        print(src)
+        for p in props:
+            if p == 'pixelWidth': print(f'  pixelWidth: {im.width}')
+            elif p == 'pixelHeight': print(f'  pixelHeight: {im.height}')
+            elif p == 'format': print(f'  format: {(im.format or "").lower()}')
+        return 0
+    if size:
+        if size[0] == 'max':
+            k = size[1] / max(im.size); size = (max(1, round(im.width * k)), max(1, round(im.height * k)))
+        im = im.resize(size, Image.LANCZOS)
+    fmt = fmt or (im.format or 'PNG')
+    if fmt in ('JPEG', 'BMP') and im.mode not in ('RGB', 'L'): im = im.convert('RGB')
+    im.save(out or src, fmt)
+    print(src); print(f'  {out or src}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
