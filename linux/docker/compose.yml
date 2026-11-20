@@ -1,10 +1,11 @@
-# docker compose -f linux/docker/compose.yml up -d --build   (from the repository root)
+# docker compose -f linux/docker/compose.yml up -d            the image from GitHub's registry (.github/workflows/linux-image.yml builds it)
+# docker compose -f linux/docker/compose.yml up -d --build    built here from this checkout instead (from the repository root)
 services:
   nxnative:
     build:
       context: ../..
       dockerfile: linux/docker/Dockerfile
-    image: nxnative-linux
+    image: ghcr.io/kernelguru/nxnative-linux:latest
     platform: linux/amd64
     container_name: nxnative
     restart: unless-stopped

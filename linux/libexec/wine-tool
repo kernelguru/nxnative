@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Runs one of Apple's Metal Developer Tools for Windows (metal.exe, metallib.exe, metal-pack.exe, ...) under Wine, as if it were the tool xcrun finds on a Mac.
 # Called through a link named after the tool (linux/libexec/metal/metal → this file), by linux/bin/xcrun or directly (dmsh_build.py runs the path `xcrun -f metal` prints).
-#   - the platform comes from -isysroot (an iPhoneOS or MacOSX SDK, which the Windows tools do not read and do not get) or from NXN_SDK, which xcrun sets for `xcrun -sdk <sdk> metal`;
+#   - the platform (which of the per-platform toolsets runs: ios\bin or macos\bin) comes from -isysroot (an iPhoneOS or MacOSX SDK, which the Windows tools do not read and do not get) or from NXN_SDK, which xcrun sets for `xcrun -sdk <sdk> metal`;
 #     the metal driver gets it as -target air64-apple-<os><version>, the version from -mios-version-min= / -mmacosx-version-min= (taken out) or the SDK's
 #   - absolute paths become Wine's Z: paths (Z: is /), in arguments and in -opt=/path, -I/path, -o/path forms
 #   - a command line past Windows' 32 767 characters goes through a response file
@@ -61,12 +61,12 @@ def main():
             sdk = 'iphoneos' if m[1] in ('ios', 'iphoneos') else 'macosx'; minver = m[2]; i += 1; continue
         if a in ('-target', '--target') or a.startswith('--target=') or a.startswith('-target='): has_target = True
         out.append(a); i += 1
+    sdk = sdk or 'macosx'
     if tool in DRIVERS and not has_target and not any(x in ('--version', '-v', '-###', '--help') for x in out):
-        sdk = sdk or 'macosx'
         try: ver = minver or nxn.sdk_settings(sdk)['version']
         except nxn.Missing as e: nxn.die(str(e))
         out = ['-target', f'air64-apple-{nxn.SDKS[sdk][3]}{ver}'] + out
-    try: exe = nxn.metal_tool(tool)
+    try: exe = nxn.metal_tool(tool, sdk)   # the platform's own toolset: Apple's Windows tools must not mix targets and tools
     except nxn.Missing as e: nxn.die(str(e), 127)
     wine = nxn.which('wine64', 'wine')
     if not wine: nxn.die('wine is not installed (the Docker image has it)', 127)

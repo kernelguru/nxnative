@@ -51,8 +51,10 @@ def has_sdk(s):
 
 
 def find_metal_root(d):
-    for p in Path(d).rglob('metal.exe'):
-        return p.parent.parent if p.parent.name.lower() == 'bin' else p.parent
+    """The top folder of an installed Metal Developer Tools under d: above the platform folders (ios\\bin\\metal.exe, macos\\bin\\metal.exe) when it has them"""
+    for p in sorted(Path(d).rglob('metal.exe')):
+        q = p.parent.parent if p.parent.name.lower() == 'bin' else p.parent
+        return q.parent if q.name.lower() in ('ios', 'macos', 'tvos', 'xros') else q
     return None
 
 
@@ -86,9 +88,10 @@ def install_metal(src):
     tools = sorted(p.stem for p in nxn.METAL.rglob('*.exe'))
     say(f'Metal tools installed in {nxn.METAL}: {", ".join(t for t in tools if t.startswith("metal") or t.startswith("air"))}')
     wine_init(quiet=True)
-    r = subprocess.run([str(nxn.LINUX / 'bin/xcrun'), '-sdk', 'iphoneos', 'metal', '--version'], capture_output=True, text=True)
-    if r.returncode: nxn.die(f'metal.exe does not run in Wine: {(r.stderr or r.stdout).strip()[:500]}')
-    say(f'metal under Wine: {r.stdout.splitlines()[0] if r.stdout else "?"}')
+    for sdk in ('iphoneos', 'macosx'):
+        r = subprocess.run([str(nxn.LINUX / 'bin/xcrun'), '-sdk', sdk, 'metal', '--version'], capture_output=True, text=True)
+        if r.returncode: nxn.die(f'metal.exe ({sdk}) does not run in Wine: {(r.stderr or r.stdout).strip()[:500]}')
+        say(f'metal under Wine for {sdk}: {r.stdout.splitlines()[0] if r.stdout else "?"} ({nxn.metal_tool("metal", sdk).relative_to(nxn.METAL)})')
     for t in ('metal-tt', 'metal-pack'):
         if t not in tools: say(f'note: {t}.exe is not in these tools: the IPA gets no offline pipeline archive, and the device builds its pipelines on its first start')
 

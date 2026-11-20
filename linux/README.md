@@ -18,8 +18,11 @@ Apple's Xcode licence covers use on Apple hardware. Using its SDK on another sys
 ## Start
 
 ```sh
-docker compose -f linux/docker/compose.yml up -d --build    # from the repository root; the web interface is on port 8080
+docker compose -f linux/docker/compose.yml up -d            # the image from ghcr.io (.github/workflows/linux-image.yml); the web interface is on port 8080
+docker compose -f linux/docker/compose.yml up -d --build    # or built from this checkout, from the repository root
 ```
+
+Or without compose: `docker run -d -p 8080:8080 -v /mnt/user/appdata/nxnative:/data ghcr.io/kernelguru/nxnative-linux:latest`.
 
 Then, in the web interface:
 

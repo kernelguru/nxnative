@@ -93,18 +93,27 @@ def clang_rt(os_name='ios'):
     return None
 
 
-def metal_tool(name):
-    """The Windows executable of a Metal tool (metal, metallib, metal-pack, metal-tt, ...) in the installed Metal Developer Tools"""
+def metal_tool(name, sdk=None):
+    """The Windows executable of a Metal tool (metal, metallib, metal-pack, metal-tt, ...) in the installed Metal Developer Tools. The Windows tools come as one toolset per
+    platform (ios\\bin\\metal.exe, macos\\bin\\metal.exe, which must not be mixed): sdk picks the one for iphoneos / macosx; a tool in no platform folder serves both"""
     index = METAL / '.nxn_tools.json'
     try: tools = json.loads(index.read_text())
     except (OSError, ValueError):
         tools = {}
         if METAL.is_dir():
-            for p in METAL.rglob('*.exe'): tools.setdefault(p.stem.lower(), str(p))
+            for p in sorted(METAL.rglob('*.exe')): tools.setdefault(p.stem.lower(), []).append(str(p.relative_to(METAL)))
             try: index.write_text(json.dumps(tools, indent=1))
             except OSError: pass
-    p = tools.get(name.lower())
-    if p and Path(p).is_file(): return Path(p)
+    cands = [METAL / p for p in tools.get(name.lower(), []) if (METAL / p).is_file()]
+    if cands:
+        want = {'iphoneos': 'ios', 'macosx': 'macos'}.get(sdk_name(sdk) if sdk else '', '')
+        def plat(p): return next((x.lower() for x in p.relative_to(METAL).parts[:-1] if x.lower() in ('ios', 'macos', 'tvos', 'xros', 'visionos')), '')
+        for c in cands:
+            if want and plat(c) == want: return c
+        for c in cands:
+            if not plat(c): return c
+        if not want: return cands[0]
+        raise Missing(f'{name}.exe for {want} is not in the Metal Developer Tools in {METAL} (found: {", ".join(str(c.relative_to(METAL)) for c in cands)})')
     raise Missing(f'{name}.exe is not in the Metal Developer Tools in {METAL}' + ('' if tools else ': install them with linux/setup/setup.py metal <installer or zip>'))
 
 

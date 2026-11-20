@@ -40,7 +40,7 @@ def main(argv):
         if rest[0] in ('-f', '--find'):
             if len(rest) < 2: nxn.die('xcrun -f: no tool named', 2)
             p = tool_path(name, rest[1])
-            if p.parent == METAL_DIR: nxn.metal_tool(rest[1])   # fails here, with the reason, when the Metal tools are not installed
+            if p.parent == METAL_DIR: nxn.metal_tool(rest[1], name)   # fails here, with the reason, when the Metal tools are not installed
             print(p); return 0
         p = tool_path(name, rest[0])
     except nxn.Missing as e:
