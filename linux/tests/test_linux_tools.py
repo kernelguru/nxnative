@@ -64,6 +64,19 @@ class Toolchain(unittest.TestCase):
         r = run(['xcrun', '-sdk', 'iphoneos', 'metal', '--version'], self.env)
         self.assertEqual(r.stdout.splitlines()[1:], ['--version'])
 
+    def test_wine_services_do_not_hold_the_pipe(self):
+        """Wine's first program starts services.exe, which outlives it with that program's output: wine-tool starts it first, detached (nxn.wine_up), so a captured call ends"""
+        fake = self.tmp / 'fakebin'
+        svc = fake / 'services.exe'
+        svc.write_text('#!/bin/sh\nsleep 20\n'); svc.chmod(0o755)
+        (fake / 'wine').write_text('#!/bin/sh\n'   # starts the service as Wine does, inheriting its output, unless it runs
+            f'pgrep -f "{svc}" > /dev/null || "{svc}" &\nprintf "%s\\n" "$@"\n')
+        (fake / 'wineboot').write_text(f'#!/bin/sh\n"{svc}" < /dev/null > /dev/null 2>&1 &\n'); (fake / 'wineboot').chmod(0o755)
+        try:
+            r = run(['xcrun', '-sdk', 'iphoneos', 'metal', '--version'], self.env, timeout=10)
+            self.assertEqual(r.stdout.splitlines()[1:], ['--version'], r.stderr)
+        finally: subprocess.run(['pkill', '-f', str(svc)])
+
     def test_response_file(self):
         many = [f'/very/long/path/number/{i}/shader.air' for i in range(2000)]
         r = run(['xcrun', '-sdk', 'iphoneos', 'metallib', *many, '-o', '/o.metallib'], self.env)

@@ -319,7 +319,9 @@ async def start_build(request: Request):
     d = GAMES / name
     if not d.is_dir() or not any(f.suffix.lower() in GAME_SUFFIXES for f in d.iterdir()): raise HTTPException(400, f'{name} holds no game files')
     if not (KEYS / 'prod.keys').is_file() and not any(f.suffix.lower() == '.nup' for f in d.iterdir()): raise HTTPException(400, 'prod.keys is missing (setup)')
-    if not nxsetup.status()['ready']: raise HTTPException(400, 'the toolchain is not ready: finish the setup first')
+    st = nxsetup.status()
+    if st['chain_running']: raise HTTPException(409, 'the translation chain lock is being written for these tools (a minute after the container starts): try again shortly')
+    if not st['ready']: raise HTTPException(400, 'the toolchain is not ready: finish the setup first')
     stamp = time.strftime('%Y%m%d-%H%M')
     out = IPA / f'{name}-{stamp}.ipa'
     cmd = [sys.executable, str(REPO / 'scripts/build_ipa_from_nsp.py'), str(d), '-k', str(KEYS / 'prod.keys'), '--progress', 'json', '-o', str(out)]

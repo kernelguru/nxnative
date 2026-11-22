@@ -7,7 +7,7 @@ The Apple parts a build needs live under one toolchain folder, NXN_TOOLCHAIN (de
   fonts/      the shared-font sources (Arial Unicode.ttf, Arial Rounded Bold.ttf from a Mac), optional
 Nothing here is Apple's: the folder is the player's, filled from files they downloaded themselves.
 """
-import json, os, plistlib, re, shutil, sys
+import fcntl, json, os, plistlib, re, shutil, subprocess, sys
 from pathlib import Path
 
 TOOLCHAIN = Path(os.environ.get('NXN_TOOLCHAIN', '/data/toolchain'))
@@ -115,6 +115,37 @@ def metal_tool(name, sdk=None):
         if not want: return cands[0]
         raise Missing(f'{name}.exe for {want} is not in the Metal Developer Tools in {METAL} (found: {", ".join(str(c.relative_to(METAL)) for c in cands)})')
     raise Missing(f'{name}.exe is not in the Metal Developer Tools in {METAL}' + ('' if tools else ': install them with linux/setup/setup.py metal <installer or zip>'))
+
+
+def wine_env():
+    return dict(os.environ, WINEPREFIX=str(WINEPREFIX), WINEDEBUG=os.environ.get('WINEDEBUG', '-all'), WINEARCH='win64', WINEDLLOVERRIDES='mscoree,mshtml=')
+
+
+def wine_services_running():
+    """Whether the prefix's background services (services.exe, started by the first Wine program of a session) are running: wineserver keeps them for its whole life"""
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit(): continue
+        try:
+            with open(f'/proc/{pid}/cmdline', 'rb') as f: cmd = f.read()
+        except OSError: continue
+        if b'services.exe' in cmd: return True
+    return False
+
+
+def wine_up():
+    """Starts Wine's background services, with their standard input and output on /dev/null, unless they run already.
+    The first Wine program of a session starts services.exe, winedevice.exe, rpcss.exe and the like, which live on with that program's standard output and error. Started from a
+    command whose output is captured (subprocess.run(capture_output=True): tool_lock.py, dmsh_build.py), they hold its pipe open for ever, and the caller waits for an end of file that
+    never comes. So they are started here first, by wineboot, attached to nothing; a lock keeps parallel compiles from racing to start them."""
+    if wine_services_running(): return
+    WINEPREFIX.mkdir(parents=True, exist_ok=True)
+    with open(WINEPREFIX / '.nxn_boot.lock', 'w') as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        if wine_services_running(): return
+        boot = which('wineboot')
+        cmd = [boot] if boot else [which('wine64', 'wine') or 'wine', 'wineboot']
+        try: subprocess.run(cmd, env=wine_env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300, start_new_session=True)
+        except (OSError, subprocess.SubprocessError): pass
 
 
 def which(*names):

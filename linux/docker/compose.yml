@@ -13,7 +13,16 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/data            # toolchain (Xcode SDK, Metal tools, Wine prefix), keys, game files, builds and IPAs
+    # A build takes what memory it can (the NSP script rewrites a game's modules side by side, each with several workers): the limit keeps that inside the container, which is
+    # then stopped by the kernel instead of the whole machine freezing. Leave the host 2 GB or more; memswap_limit is memory and swap together. A large game such as
+    # Mario Kart World wants 12 GB or more of memory, or swap that makes up for it.
+    mem_limit: ${NXN_MEM_LIMIT:-8g}
+    memswap_limit: ${NXN_MEMSWAP_LIMIT:-16g}
     environment:
+      # Fewer parallel workers for machines with little memory: DM_REWRITE_J per module rewrite (default: about 2 × cores ÷ modules), J for the shader steps (default: cores).
+      # Raise them, or remove both lines, with 16 GB or more.
+      - DM_REWRITE_J=2
+      - J=4
       # NXN_PASSWORD: the web interface asks for it (user "nxnative"); leave it empty only behind a reverse proxy that authenticates
       - NXN_PASSWORD=
       # RomM: the web interface's import. A client API token (rmm_...) or a username and password

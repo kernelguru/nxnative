@@ -61,7 +61,7 @@
     <div class="row"><label class="b">prod.keys<input type="file" data-setup="keys"></label><span class="up" id="up-keys"></span>
       <span class="dim">Stored with mode 600, never shown or logged.</span></div>
     <div class="row"><label class="b">Fonts (.ttf)<input type="file" accept=".ttf" multiple data-setup="font"></label><span class="up" id="up-font"></span>
-      <span class="dim">Arial Unicode.ttf and Arial Rounded Bold.ttf from a Mac (/System/Library/Fonts/Supplemental). Optional: stand-ins otherwise.</span></div>
+      <span class="dim">Arial Unicode.ttf and Arial Rounded Bold.ttf from a Mac (/System/Library/Fonts/Supplemental), or ARIALUNI.TTF / ARLRDBD.TTF from Office (C:\Windows\Fonts). Optional: stand-ins otherwise.</span></div>
   </div>
   <div class="card">
     <h3>RomM and export</h3>
@@ -130,7 +130,7 @@ async function refresh() {
     const y = (v, t) => `<span class="${v ? 'ok' : 'bad'}">${v ? '✓' : '✗'}</span> ${t}`;
     $('#st').innerHTML = [y(s.xcode.ios_sdk, `Xcode ${esc(s.xcode.version)||''} · iOS SDK ${esc(s.xcode.ios_sdk)||'missing'} · macOS SDK ${esc(s.xcode.macos_sdk)||'missing'}`),
       y(s.xcode.swift_libs, 'Swift libraries of the Xcode toolchain'), y(s.metal.installed, `Metal tools: ${esc(s.metal.tools.join(', '))||'missing'}`),
-      y(s.metal.prefix, 'Wine prefix'), y(s.chain, 'translation chain lock for these tools'), y(s.keys, 'prod.keys'),
+      y(s.metal.prefix, 'Wine prefix'), (s.chain_running ? '<span class="warn">…</span> translation chain lock: being written' : y(s.chain, 'translation chain lock for these tools')), y(s.keys, 'prod.keys'),
       y(s.fonts.std.own && s.fonts.letters.own, 'Apple fonts' + (s.fonts.std.own ? '' : ' (stand-ins in use)')),
       y(Object.values(s.tools).every(Boolean), 'tools: ' + Object.entries(s.tools).map(([k,v]) => v ? k : `<b class="bad">${k}</b>`).join(', '))].join('<br>') } catch (e) { $('#st').textContent = e }
   const t = location.hash.slice(1) || 'setup';

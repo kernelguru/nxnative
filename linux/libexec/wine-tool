@@ -5,7 +5,8 @@
 #     the metal driver gets it as -target air64-apple-<os><version>, the version from -mios-version-min= / -mmacosx-version-min= (taken out) or the SDK's
 #   - absolute paths become Wine's Z: paths (Z: is /), in arguments and in -opt=/path, -I/path, -o/path forms
 #   - a command line past Windows' 32 767 characters goes through a response file
-#   - standard input, output and the exit code pass through (dmsh_pch.py feeds the source on standard input)
+#   - standard input, output and the exit code pass through (dmsh_pch.py feeds the source on standard input); Wine's background services are started first, detached,
+#     so that they do not hold the caller's output pipe open (nxn.wine_up)
 import os, re, subprocess, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn
@@ -71,7 +72,8 @@ def main():
     wine = nxn.which('wine64', 'wine')
     if not wine: nxn.die('wine is not installed (the Docker image has it)', 127)
     conv = [convert(a) for a in out]
-    env = dict(os.environ, WINEPREFIX=str(nxn.WINEPREFIX), WINEDEBUG=os.environ.get('WINEDEBUG', '-all'))
+    nxn.wine_up()   # Wine's services first, attached to nothing: started by this program they would keep its caller's output pipe open (nxn.wine_up)
+    env = nxn.wine_env()
     rsp = None
     if sum(len(a) + 3 for a in conv) + len(str(exe)) > 30000:
         fd, rsp = tempfile.mkstemp(prefix='nxn_rsp_', suffix='.rsp', dir=os.environ.get('TMPDIR'))

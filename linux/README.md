@@ -48,6 +48,13 @@ python3 linux/setup/setup.py status
 python3 scripts/build_ipa_from_nsp.py /data/games/<folder> -k /data/keys/prod.keys
 ```
 
+### Memory
+
+A build uses as much memory as it can get. The NSP script rewrites a game's code modules side by side, each with several workers. A large game such as Mario Kart World needs 12 GB or more, or swap to make up the difference. `compose.yml` therefore sets two things:
+
+- a memory limit for the container (`NXN_MEM_LIMIT`, `NXN_MEMSWAP_LIMIT`). When memory runs out, the kernel stops the build instead of the whole machine freezing.
+- fewer workers (`DM_REWRITE_J=2`, `J=4`). Raise both or remove the lines on a machine with 16 GB or more.
+
 ## How it works
 
 The NSP script and `dm/ios/tools/build_ipa.sh` run unchanged. `linux/bin`, first on `PATH`, answers the Apple tools they call:
@@ -72,6 +79,7 @@ The shader translator, NSP extraction and SPIRV-Cross are built for Linux in the
 
 - `setup.py status` lists what is missing.
 - The Swift compile fails reading the SDK's Swift interfaces: the image's Swift is older than the Xcode's. Rebuild with a matching `SWIFT_IMAGE` (`docker compose build --build-arg SWIFT_IMAGE=swift:<version>-noble`).
-- `metal.exe` does not run: create the Wine prefix again (delete `/data/toolchain/wine`, then use **Create Wine prefix**). It installs the Visual C++ runtime with winetricks.
+- `metal.exe` does not run: create the Wine prefix again (delete `/data/toolchain/wine`, use **Create Wine prefix**, then install the Metal tools again). The tools are installed with the Visual C++ runtime (winetricks) only when they do not start without it.
+- The chain lock is written in the background a minute after the container starts, and only when no lock kept in the volume fits the tools. Its log is `/data/toolchain/chain.log`.
 - A compile error in Apple's headers: `NXN_CLANG_MODULES=0` turns off clang modules, and `NXN_VERBOSE=1` shows every compiler warning.
 - Tests: `python3 linux/tests/test_linux_tools.py`.
