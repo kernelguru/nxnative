@@ -29,7 +29,9 @@ class Toolchain(unittest.TestCase):
             for t in ('metal', 'metallib'): (tc / f'metal/{plat}/bin/{t}.exe').write_text('')
         (tc / 'metal/bin').mkdir(); (tc / 'metal/bin/metal-tt.exe').write_text('')
         fake = self.tmp / 'fakebin'; fake.mkdir()
-        (fake / 'wine').write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n'); (fake / 'wine').chmod(0o755)
+        for w in ('wine', 'wine64'):   # both names: the image has a real Wine, which the tests must not run
+            (fake / w).write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n'); (fake / w).chmod(0o755)
+        (fake / 'wineboot').write_text('#!/bin/sh\n'); (fake / 'wineboot').chmod(0o755)
         self.env = dict(os.environ, NXN_TOOLCHAIN=str(tc), PATH=f'{LINUX / "bin"}:{fake}:{os.environ["PATH"]}', WINEPREFIX=str(self.tmp / 'wine'))
 
     def tearDown(self): shutil.rmtree(self.tmp, ignore_errors=True)
@@ -69,9 +71,10 @@ class Toolchain(unittest.TestCase):
         fake = self.tmp / 'fakebin'
         svc = fake / 'services.exe'
         svc.write_text('#!/bin/sh\nsleep 20\n'); svc.chmod(0o755)
-        (fake / 'wine').write_text('#!/bin/sh\n'   # starts the service as Wine does, inheriting its output, unless it runs
-            f'pgrep -f "{svc}" > /dev/null || "{svc}" &\nprintf "%s\\n" "$@"\n')
-        (fake / 'wineboot').write_text(f'#!/bin/sh\n"{svc}" < /dev/null > /dev/null 2>&1 &\n'); (fake / 'wineboot').chmod(0o755)
+        up = self.tmp / 'services.up'   # as wineserver knows its services run: then no Wine program starts them again
+        for w in ('wine', 'wine64'):   # starts the service as Wine does, inheriting its output, unless it runs
+            (fake / w).write_text(f'#!/bin/sh\n[ -e "{up}" ] || {{ touch "{up}"; "{svc}" & }}\nprintf "%s\\n" "$@"\n'); (fake / w).chmod(0o755)
+        (fake / 'wineboot').write_text(f'#!/bin/sh\ntouch "{up}"; "{svc}" < /dev/null > /dev/null 2>&1 &\n'); (fake / 'wineboot').chmod(0o755)
         try:
             r = run(['xcrun', '-sdk', 'iphoneos', 'metal', '--version'], self.env, timeout=10)
             self.assertEqual(r.stdout.splitlines()[1:], ['--version'], r.stderr)
