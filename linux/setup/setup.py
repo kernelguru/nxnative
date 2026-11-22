@@ -35,8 +35,10 @@ def install_xcode(src):
     if tmp.exists(): shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     say(f'reading {src} ({src.stat().st_size / 2**30:.1f} GB): only the SDKs and the toolchain libraries are written (this takes 10-30 minutes)')
-    kept, n = xip.extract(src, tmp, progress=lambda k, n, b: say(f'  {k} files kept, {b / 2**30:.1f} GB unpacked'))
-    say(f'{kept} files kept of {n}')
+    kept, n, filled, left = xip.extract(src, tmp, progress=lambda k, n, b: say(f'  {k} files kept, {b / 2**30:.1f} GB unpacked'))
+    say(f'{kept} files kept of {n}; {filled} hard links filled')
+    if left:
+        shutil.rmtree(tmp); nxn.die(f'{left} hard-linked files of {src} have no entry with their bytes: the SDK would be incomplete (report this with linux/setup/xip.py {src} --list)')
     for need in ('Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs', 'Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift'):
         if not (tmp / need).is_dir():
             shutil.rmtree(tmp); nxn.die(f'{src} has no {need}: is it a full Xcode .xip (not the Command Line Tools)?')
@@ -44,6 +46,14 @@ def install_xcode(src):
     tmp.rename(nxn.XCODE)
     v, b = nxn.xcode_version()
     say(f'Xcode {v} ({b}) installed: iOS SDK {nxn.sdk_settings("iphoneos")["version"]}' + (f', macOS SDK {nxn.sdk_settings("macosx")["version"]}' if has_sdk('macosx') else ''))
+
+
+def sdk_broken():
+    """Whether the installed iOS SDK holds hard-link placeholders for headers (an extraction by the xip.py from before links were filled): install the .xip again"""
+    try: f = nxn.sdk_path('iphoneos') / 'System/Library/Frameworks/Foundation.framework/Headers/Foundation.h'
+    except nxn.Missing: return False
+    try: return f.read_bytes()[:len(xip.PLACEHOLDER)] == xip.PLACEHOLDER
+    except OSError: return False
 
 
 def has_sdk(s):
@@ -236,6 +246,7 @@ def status():
     for k in ('std', 'letters'):
         p, own = font(k)
         s.setdefault('fonts', {})[k] = {'path': str(p) if p else None, 'own': own}
+    s['xcode']['broken'] = sdk_broken()
     s['tools'] = {}
     for name, rel in (('dmsh_xlate', 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'), ('nx_extract', 'dm/tools/nx_extract_bin/nx_extract'), ('spirv-cross', 'dm/gfx/tools/spirv_cross_bin/spirv-cross')):
         p = nxn.REPO / rel
@@ -246,7 +257,7 @@ def status():
         except nxn.Missing: s['tools'][name] = False
     s['chain'] = chain_current()
     s['chain_running'] = chain_running()
-    s['ready'] = bool(s['xcode']['ios_sdk'] and s['xcode']['swift_libs'] and s['metal']['installed'] and all(s['tools'][t] for t in ('dmsh_xlate', 'nx_extract', 'spirv-cross', 'clang', 'ld64.lld', 'swiftc')) and s['chain'])
+    s['ready'] = bool(s['xcode']['ios_sdk'] and not s['xcode']['broken'] and s['xcode']['swift_libs'] and s['metal']['installed'] and all(s['tools'][t] for t in ('dmsh_xlate', 'nx_extract', 'spirv-cross', 'clang', 'ld64.lld', 'swiftc')) and s['chain'])
     return s
 
 
@@ -265,6 +276,7 @@ def main(a):
         if '--json' in a: print(json.dumps(s, indent=1))
         else:
             x = s['xcode']
+            if x['broken']: say('[RED] the installed iOS SDK is incomplete (hard-link placeholders from an older setup): install the Xcode .xip again')
             say(f'Xcode: {x["version"] or "missing"} (iOS SDK {x["ios_sdk"] or "missing"}, macOS SDK {x["macos_sdk"] or "missing"}, Swift libraries {"yes" if x["swift_libs"] else "missing"})')
             say(f'Metal tools: {", ".join(s["metal"]["tools"]) or "missing"}; Wine prefix: {"ready" if s["metal"]["prefix"] else "not created"}')
             for k, f in s['fonts'].items(): say(f'font {k}: {f["path"] or "missing"}{"" if f["own"] else " (a stand-in: shared fonts look different from Apple\'s Arial)"}')

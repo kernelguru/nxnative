@@ -121,10 +121,10 @@ class Toolchain(unittest.TestCase):
 def make_xip(path, files):
     """A minimal .xip: a xar with one file Content, a pbzx stream (one XZ chunk, one stored chunk) of an odc cpio archive"""
     cp = io.BytesIO()
-    def entry(name, mode, data=b''):
+    def entry(name, mode, data=b'', ino=0, nlink=1):
         nb = name.encode() + b'\0'
-        cp.write(b'070707' + b'%06o%06o%06o%06o%06o%06o%06o%011o%06o%011o' % (0, 0, mode, 0, 0, 1, 0, 0, len(nb), len(data)) + nb + data)
-    for name, (mode, data) in files.items(): entry(name, mode, data)
+        cp.write(b'070707' + b'%06o%06o%06o%06o%06o%06o%06o%011o%06o%011o' % (1, ino, mode, 0, 0, nlink, 0, 0, len(nb), len(data)) + nb + data)
+    for name, f in files.items(): entry(name, *f)
     entry('TRAILER!!!', 0)
     raw = cp.getvalue(); half = len(raw) // 2
     px = b'pbzx' + struct.pack('>Q', 1 << 24)
@@ -151,7 +151,7 @@ class Xip(unittest.TestCase):
                 './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/libswiftCompatibility56.a': (0o100644, b'lib' * 1000),
                 './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos/x.a': (0o100644, b'no'),
                 './Xcode.app/Contents/Applications/Simulator.app/x': (0o100644, b'no')})
-            kept, n = xip.extract(tmp / 'x.xip', tmp / 'out')
+            kept, n, _, _ = xip.extract(tmp / 'x.xip', tmp / 'out')
             o = tmp / 'out/Contents'
             self.assertEqual((o / 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/SDKSettings.json').read_text(), '{"Version": "26.2"}')
             self.assertTrue((o / 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.2.sdk').is_symlink())
@@ -160,6 +160,34 @@ class Xip(unittest.TestCase):
             self.assertFalse((o / 'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos').exists())
             self.assertFalse((o / 'Applications').exists())
             self.assertEqual(n, 8)
+        finally: shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_hard_links(self):
+        """Xcode's cpio holds a hard-linked file's bytes with its first entry and NULLcanary placeholders with the others (the iOS SDK's headers linking to the macOS SDK's,
+        or to a platform the filter leaves out)"""
+        import xip
+        tmp = Path(tempfile.mkdtemp(prefix='nxn_xip_'))
+        try:
+            plat = './Xcode.app/Contents/Developer/Platforms'
+            ph = lambda n: xip.PLACEHOLDER + b'\0' * (n - len(xip.PLACEHOLDER))
+            mac, tv = b'/* Foundation.h */\n' * 20, b'/* shared with tvOS */\n' * 9
+            make_xip(tmp / 'x.xip', {
+                f'{plat}/AppleTVOS.platform/Developer/SDKs/AppleTVOS.sdk/a.h': (0o100644, tv, 7, 2),              # left out by the filter, but the iOS SDK links to it
+                f'{plat}/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Foundation.h': (0o100644, mac, 5, 2),
+                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/Foundation.h': (0o100644, ph(len(mac)), 5, 2),
+                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/a.h': (0o100644, ph(len(tv)), 7, 2),
+                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/b.h': (0o100644, ph(30), 9, 2),              # its bytes come later
+                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/c.h': (0o100644, b'x' * 30, 9, 2),
+                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/d.h': (0o100644, ph(40), 11, 2)})           # no entry has its bytes
+            kept, n, filled, left = xip.extract(tmp / 'x.xip', tmp / 'out')
+            ios = tmp / 'out/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk'
+            self.assertEqual((ios / 'Foundation.h').read_bytes(), mac)
+            self.assertEqual((ios / 'a.h').read_bytes(), tv)
+            self.assertEqual((ios / 'b.h').read_bytes(), b'x' * 30)
+            self.assertEqual((filled, left), (3, 1))
+            self.assertEqual([Path(p).name for p in xip.placeholders(tmp / 'out')], ['d.h'])
+            self.assertFalse((tmp / 'out/Contents/Developer/Platforms/AppleTVOS.platform').exists())
+            self.assertFalse((tmp / 'out/.nxn_hardlinks').exists())
         finally: shutil.rmtree(tmp, ignore_errors=True)
 
 

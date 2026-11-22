@@ -128,7 +128,7 @@ async function refresh() {
   try { const s = await api('/api/status');
     $('#ready').textContent = s.ready ? 'ready' : 'setup needed'; $('#ready').className = 'pill ' + (s.ready ? 'ok' : 'warn');
     const y = (v, t) => `<span class="${v ? 'ok' : 'bad'}">${v ? '✓' : '✗'}</span> ${t}`;
-    $('#st').innerHTML = [y(s.xcode.ios_sdk, `Xcode ${esc(s.xcode.version)||''} · iOS SDK ${esc(s.xcode.ios_sdk)||'missing'} · macOS SDK ${esc(s.xcode.macos_sdk)||'missing'}`),
+    $('#st').innerHTML = [(s.xcode.broken ? '<span class="bad">✗ the iOS SDK is incomplete (hard-link placeholders from an older setup): upload the Xcode .xip again</span><br>' : '') + y(s.xcode.ios_sdk && !s.xcode.broken, `Xcode ${esc(s.xcode.version)||''} · iOS SDK ${esc(s.xcode.ios_sdk)||'missing'} · macOS SDK ${esc(s.xcode.macos_sdk)||'missing'}`),
       y(s.xcode.swift_libs, 'Swift libraries of the Xcode toolchain'), y(s.metal.installed, `Metal tools: ${esc(s.metal.tools.join(', '))||'missing'}`),
       y(s.metal.prefix, 'Wine prefix'), (s.chain_running ? '<span class="warn">…</span> translation chain lock: being written' : y(s.chain, 'translation chain lock for these tools')), y(s.keys, 'prod.keys'),
       y(s.fonts.std.own && s.fonts.letters.own, 'Apple fonts' + (s.fonts.std.own ? '' : ' (stand-ins in use)')),
