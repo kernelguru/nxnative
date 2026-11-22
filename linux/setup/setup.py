@@ -14,7 +14,7 @@ Each step can be repeated; a later one replaces what an earlier one installed. T
 import json, os, shutil, subprocess, sys, tempfile, zipfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib')); import nxn
-sys.path.insert(0, str(Path(__file__).resolve().parent)); import xip
+sys.path.insert(0, str(Path(__file__).resolve().parent)); import extract_xip
 
 FONT_NAMES = {'std': ('Arial Unicode.ttf', 'Arial Unicode MS.ttf', 'ArialUnicode.ttf', 'ARIALUNI.TTF'),   # macOS's names, then Microsoft Office's (C:\\Windows\\Fonts)
               'letters': ('Arial Rounded Bold.ttf', 'ArialRoundedBold.ttf', 'Arial Rounded MT Bold.ttf', 'ARLRDBD.TTF')}
@@ -34,25 +34,50 @@ def install_xcode(src):
     tmp = nxn.TOOLCHAIN / 'xcode.partial'
     if tmp.exists(): shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    say(f'reading {src} ({src.stat().st_size / 2**30:.1f} GB): only the SDKs and the toolchain libraries are written (this takes 10-30 minutes)')
-    kept, n, filled, left = xip.extract(src, tmp, progress=lambda k, n, b: say(f'  {k} files kept, {b / 2**30:.1f} GB unpacked'))
-    say(f'{kept} files kept of {n}; {filled} hard links filled')
-    if left:
-        shutil.rmtree(tmp); nxn.die(f'{left} hard-linked files of {src} have no entry with their bytes: the SDK would be incomplete (report this with linux/setup/xip.py {src} --list)')
-    for need in ('Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs', 'Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift'):
-        if not (tmp / need).is_dir():
-            shutil.rmtree(tmp); nxn.die(f'{src} has no {need}: is it a full Xcode .xip (not the Command Line Tools)?')
+    say(f'reading {src} ({src.stat().st_size / 2**30:.1f} GB) twice: only the SDKs and the toolchain libraries are written (10-30 minutes)')
+    r = extract_xip.extract(src, tmp, say=say)
+    say(f'{r["files"]} files, {r["links"]} symlinks; {r["hardlinks"]} hard-linked files filled from their carriers')
+    problems = validate_xcode(tmp, r)
+    if problems:
+        shutil.rmtree(tmp)
+        nxn.die(f'{src} did not give a complete SDK, nothing installed:\n  ' + '\n  '.join(problems))
     if nxn.XCODE.exists(): shutil.rmtree(nxn.XCODE)
     tmp.rename(nxn.XCODE)
     v, b = nxn.xcode_version()
-    say(f'Xcode {v} ({b}) installed: iOS SDK {nxn.sdk_settings("iphoneos")["version"]}' + (f', macOS SDK {nxn.sdk_settings("macosx")["version"]}' if has_sdk('macosx') else ''))
+    say(f'Xcode {v} ({b}) installed: iOS SDK {nxn.sdk_settings("iphoneos")["version"]}, macOS SDK {nxn.sdk_settings("macosx")["version"]}; checks passed')
+
+
+def validate_xcode(root, result=None):
+    """What is wrong with an extracted Xcode tree (empty when nothing): the checks of NXNative for Windows' Easy Builder (Foundation and UIKit headers, iOS SDK 26 or later, no
+    placeholder left), and what the Linux build reads besides (the macOS SDK, the Swift libraries for iOS, Xcode's version)"""
+    out, root = [], Path(root)
+    dev = root / 'Contents/Developer'
+    if result and result.get('lost'): out.append(f'{result["lost"]} hard-linked files have no entry that carries their bytes')
+    for name, plat, pre in (('iOS', 'iPhoneOS.platform', 'iPhoneOS'), ('macOS', 'MacOSX.platform', 'MacOSX')):
+        d = dev / 'Platforms' / plat / 'Developer/SDKs'
+        sdk = d / f'{pre}.sdk' if (d / f'{pre}.sdk').is_dir() else next(iter(sorted(d.glob(f'{pre}*.sdk'))), None) if d.is_dir() else None
+        if not sdk or not sdk.is_dir(): out.append(f'no {name} SDK ({d})'); continue
+        try: ver = json.loads((sdk / 'SDKSettings.json').read_text())['Version']
+        except (OSError, ValueError, KeyError): out.append(f'{name} SDK: no readable SDKSettings.json'); continue
+        if name == 'iOS':
+            try: major = int(str(ver).split('.')[0])
+            except ValueError: major = 0
+            if major < 26: out.append(f'iOS SDK {ver}: 26 or later is needed')
+            for fw in ('Foundation', 'UIKit'):
+                if not (sdk / f'System/Library/Frameworks/{fw}.framework/Headers/{fw}.h').is_file(): out.append(f'iOS SDK: no {fw}.framework/Headers/{fw}.h')
+    swift = dev / 'Toolchains/XcodeDefault.xctoolchain/usr/lib/swift'
+    if not (swift / 'iphoneos').is_dir(): out.append(f'no Swift libraries for iOS ({swift / "iphoneos"})')
+    if not (root / 'Contents/version.plist').is_file(): out.append('no Contents/version.plist (Xcode\'s version)')
+    left = result['placeholders'] if result else [str(p) for p in extract_xip.placeholders(root)]
+    if left: out.append(f'{len(left)} files still hold a hard-link placeholder, e.g. {left[0]}')
+    return out
 
 
 def sdk_broken():
-    """Whether the installed iOS SDK holds hard-link placeholders for headers (an extraction by the xip.py from before links were filled): install the .xip again"""
+    """Whether the installed iOS SDK holds hard-link placeholders for headers (an extraction from before hard links were filled): install the .xip again"""
     try: f = nxn.sdk_path('iphoneos') / 'System/Library/Frameworks/Foundation.framework/Headers/Foundation.h'
     except nxn.Missing: return False
-    try: return f.read_bytes()[:len(xip.PLACEHOLDER)] == xip.PLACEHOLDER
+    try: return f.read_bytes()[:len(extract_xip.CANARY)] == extract_xip.CANARY
     except OSError: return False
 
 

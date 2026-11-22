@@ -137,58 +137,76 @@ def make_xip(path, files):
 
 
 class Xip(unittest.TestCase):
+    """linux/setup/extract_xip.py (NXNative for Windows' extractor) and setup.py's checks of what it wrote"""
+    def setUp(self): self.tmp = Path(tempfile.mkdtemp(prefix='nxn_xip_'))
+    def tearDown(self): shutil.rmtree(self.tmp, ignore_errors=True)
+
     def test_extract(self):
-        import xip
-        tmp = Path(tempfile.mkdtemp(prefix='nxn_xip_'))
-        try:
-            sdk = './Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs'
-            make_xip(tmp / 'x.xip', {
-                './Xcode.app/Contents/version.plist': (0o100644, b'<plist/>'),
-                f'{sdk}/iPhoneOS.sdk': (0o040755, b''),
-                f'{sdk}/iPhoneOS.sdk/SDKSettings.json': (0o100644, b'{"Version": "26.2"}'),
-                f'{sdk}/iPhoneOS26.2.sdk': (0o120755, b'iPhoneOS.sdk'),
-                './Xcode.app/Contents/Developer/Platforms/WatchOS.platform/Developer/SDKs/WatchOS.sdk/x': (0o100644, b'no'),
-                './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/libswiftCompatibility56.a': (0o100644, b'lib' * 1000),
-                './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos/x.a': (0o100644, b'no'),
-                './Xcode.app/Contents/Applications/Simulator.app/x': (0o100644, b'no')})
-            kept, n, _, _ = xip.extract(tmp / 'x.xip', tmp / 'out')
-            o = tmp / 'out/Contents'
-            self.assertEqual((o / 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/SDKSettings.json').read_text(), '{"Version": "26.2"}')
-            self.assertTrue((o / 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.2.sdk').is_symlink())
-            self.assertEqual((o / 'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/libswiftCompatibility56.a').read_bytes(), b'lib' * 1000)
-            self.assertFalse((o / 'Developer/Platforms/WatchOS.platform').exists())
-            self.assertFalse((o / 'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos').exists())
-            self.assertFalse((o / 'Applications').exists())
-            self.assertEqual(n, 8)
-        finally: shutil.rmtree(tmp, ignore_errors=True)
+        import extract_xip
+        sdk = './Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs'
+        make_xip(self.tmp / 'x.xip', {
+            './Xcode.app/Contents/version.plist': (0o100644, b'<plist/>'),
+            f'{sdk}/iPhoneOS.sdk': (0o040755, b''),
+            f'{sdk}/iPhoneOS.sdk/SDKSettings.json': (0o100644, b'{"Version": "26.2"}'),
+            f'{sdk}/iPhoneOS26.2.sdk': (0o120755, b'iPhoneOS.sdk'),
+            './Xcode.app/Contents/Developer/Platforms/WatchOS.platform/Developer/SDKs/WatchOS.sdk/x': (0o100644, b'no'),
+            './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/libswiftCompatibility56.a': (0o100644, b'lib' * 1000),
+            './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos/x.a': (0o100644, b'no'),
+            './Xcode.app/Contents/Applications/Simulator.app/x': (0o100644, b'no')})
+        r = extract_xip.extract(self.tmp / 'x.xip', self.tmp / 'out', say=lambda m: None)
+        o = self.tmp / 'out/Contents'
+        self.assertEqual((o / 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/SDKSettings.json').read_text(), '{"Version": "26.2"}')
+        self.assertTrue((o / 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.2.sdk').is_symlink())
+        self.assertEqual((o / 'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/libswiftCompatibility56.a').read_bytes(), b'lib' * 1000)
+        self.assertFalse((o / 'Developer/Platforms/WatchOS.platform').exists())
+        self.assertFalse((o / 'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos').exists())
+        self.assertFalse((o / 'Applications').exists())
+        self.assertEqual((r['lost'], r['placeholders']), (0, []))
+
+    def hard_link_xip(self, carrier=True):
+        """Xcode 27's cpio: a hard-linked file's bytes with one entry, NULLcanary placeholders with the others (the iOS SDK's headers linking to the macOS SDK's, which come
+        first, or to a platform the filter leaves out, or to an entry that comes after them)"""
+        import extract_xip
+        plat = './Xcode.app/Contents/Developer/Platforms'
+        ph = lambda n: extract_xip.CANARY + b'\0' * (n - len(extract_xip.CANARY))
+        ios, mac = f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk', f'{plat}/MacOSX.platform/Developer/SDKs/MacOSX.sdk'
+        self.found, self.uikit, tv = b'/* Foundation.h */\n' * 20, b'/* UIKit.h */\n' * 7, b'/* shared with tvOS */\n' * 9
+        tc = './Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift'
+        files = {
+            './Xcode.app/Contents/version.plist': (0o100644, b'<plist/>'),
+            f'{plat}/AppleTVOS.platform/Developer/SDKs/AppleTVOS.sdk/a.h': (0o100644, tv, 7, 2),                     # left out, but the iOS SDK links to it
+            f'{mac}/SDKSettings.json': (0o100644, b'{"Version": "26.2"}'),
+            f'{mac}/System/Library/Frameworks/Foundation.framework/Headers/Foundation.h': (0o100644, self.found, 5, 2),
+            f'{ios}/SDKSettings.json': (0o100644, b'{"Version": "26.2"}'),
+            f'{ios}/System/Library/Frameworks/Foundation.framework/Headers/Foundation.h': (0o100644, ph(len(self.found)), 5, 2),
+            f'{ios}/System/Library/Frameworks/UIKit.framework/Headers/UIKit.h': (0o100644, ph(len(self.uikit)), 9, 2),   # its bytes come later
+            f'{ios}/a.h': (0o100644, ph(len(tv)), 7, 2),
+            f'{ios}/zz/UIKit-copy.h': (0o100644, self.uikit, 9, 2),
+            f'{tc}/iphoneos/libswiftCore.tbd': (0o100644, b'--- tbd'),
+        }
+        if not carrier: files[f'{ios}/d.h'] = (0o100644, ph(40), 11, 2)   # no entry has its bytes
+        make_xip(self.tmp / 'x.xip', files)
+        return extract_xip.extract(self.tmp / 'x.xip', self.tmp / 'out', say=lambda m: None)
 
     def test_hard_links(self):
-        """Xcode's cpio holds a hard-linked file's bytes with its first entry and NULLcanary placeholders with the others (the iOS SDK's headers linking to the macOS SDK's,
-        or to a platform the filter leaves out)"""
-        import xip
-        tmp = Path(tempfile.mkdtemp(prefix='nxn_xip_'))
-        try:
-            plat = './Xcode.app/Contents/Developer/Platforms'
-            ph = lambda n: xip.PLACEHOLDER + b'\0' * (n - len(xip.PLACEHOLDER))
-            mac, tv = b'/* Foundation.h */\n' * 20, b'/* shared with tvOS */\n' * 9
-            make_xip(tmp / 'x.xip', {
-                f'{plat}/AppleTVOS.platform/Developer/SDKs/AppleTVOS.sdk/a.h': (0o100644, tv, 7, 2),              # left out by the filter, but the iOS SDK links to it
-                f'{plat}/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Foundation.h': (0o100644, mac, 5, 2),
-                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/Foundation.h': (0o100644, ph(len(mac)), 5, 2),
-                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/a.h': (0o100644, ph(len(tv)), 7, 2),
-                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/b.h': (0o100644, ph(30), 9, 2),              # its bytes come later
-                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/c.h': (0o100644, b'x' * 30, 9, 2),
-                f'{plat}/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/d.h': (0o100644, ph(40), 11, 2)})           # no entry has its bytes
-            kept, n, filled, left = xip.extract(tmp / 'x.xip', tmp / 'out')
-            ios = tmp / 'out/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk'
-            self.assertEqual((ios / 'Foundation.h').read_bytes(), mac)
-            self.assertEqual((ios / 'a.h').read_bytes(), tv)
-            self.assertEqual((ios / 'b.h').read_bytes(), b'x' * 30)
-            self.assertEqual((filled, left), (3, 1))
-            self.assertEqual([Path(p).name for p in xip.placeholders(tmp / 'out')], ['d.h'])
-            self.assertFalse((tmp / 'out/Contents/Developer/Platforms/AppleTVOS.platform').exists())
-            self.assertFalse((tmp / 'out/.nxn_hardlinks').exists())
-        finally: shutil.rmtree(tmp, ignore_errors=True)
+        import setup
+        r = self.hard_link_xip()
+        ios = self.tmp / 'out/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk'
+        self.assertEqual((ios / 'System/Library/Frameworks/Foundation.framework/Headers/Foundation.h').read_bytes(), self.found)
+        self.assertEqual((ios / 'System/Library/Frameworks/UIKit.framework/Headers/UIKit.h').read_bytes(), self.uikit)
+        self.assertEqual((ios / 'a.h').read_bytes(), b'/* shared with tvOS */\n' * 9)
+        self.assertEqual((r['lost'], r['placeholders']), (0, []))
+        self.assertFalse((self.tmp / 'out/Contents/Developer/Platforms/AppleTVOS.platform').exists())
+        self.assertEqual(setup.validate_xcode(self.tmp / 'out', r), [])
+
+    def test_validation_refuses(self):
+        import setup
+        r = self.hard_link_xip(carrier=False)
+        self.assertEqual(r['lost'], 1)
+        problems = setup.validate_xcode(self.tmp / 'out', r)
+        self.assertTrue(any('no entry that carries' in p for p in problems), problems)
+        (self.tmp / 'out/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIKit.h').unlink()
+        self.assertTrue(any('UIKit.h' in p for p in setup.validate_xcode(self.tmp / 'out')))
 
 
 if __name__ == '__main__':
