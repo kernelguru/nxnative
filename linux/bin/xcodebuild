@@ -146,9 +146,30 @@ class Compiler:
         return o, (r.stderr if r.stderr.strip() and os.environ.get('NXN_VERBOSE') else None)
 
 
+PREBUILT = Path(os.environ.get('NXN_SWIFT_PREBUILT', nxn.LINUX / 'prebuilt'))
+
+
+def swift_prebuilt(objdir, units):
+    """The Swift sources' object compiled on a Mac (linux/swift/prebuilt.py: the iOS 27 SDK's SwiftUI expands @State with a macro plugin that only macOS runs), when it was built
+    for exactly these sources; else the build stops and says why. NXN_SWIFT_LOCAL=1 compiles with this machine's swiftc instead (for an SDK without such macros)."""
+    sys.path.insert(0, str(nxn.LINUX / 'swift')); import prebuilt
+    obj, info = prebuilt.load(PREBUILT)
+    names = sorted(p.name for p, _ in units)
+    if not obj: fail(f'no prebuilt Swift object in {PREBUILT}: the Docker image brings it (linux/swift/prebuilt.py); a checkout without the image needs NXN_SWIFT_LOCAL=1 and a Swift that can')
+    if info.get('key') != prebuilt.key(nxn.REPO) or sorted(info.get('files') or []) != names:
+        fail(f'the prebuilt Swift object ({info.get("key")}, from commit {info.get("commit") or "?"}) was built for other Swift sources than this checkout\'s ({prebuilt.key(nxn.REPO)}): '
+             'use the image built from this commit (docker compose pull), or a checkout of the image\'s commit')
+    dst = objdir / 'swift' / prebuilt.OBJECT
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(obj, dst)
+    say(f'CompileSwiftSources normal arm64 com.apple.xcode.tools.swift.compiler ({len(names)} files): prebuilt on a Mac, {info.get("xcode", "?")}, key {info["key"]}')
+    return [dst]
+
+
 def swift(st, sdk, objdir, units, desc, comp):
     files = [str(p) for p, _ in units]
     if not files: return []
+    if os.environ.get('NXN_SWIFT_LOCAL') != '1': return swift_prebuilt(objdir, units)
     o = objdir / 'swift' / f'{st.get("PRODUCT_MODULE_NAME")}-swift.o'
     o.parent.mkdir(parents=True, exist_ok=True)
     ver = st.get('SWIFT_VERSION', '5.0').split('.')[0]

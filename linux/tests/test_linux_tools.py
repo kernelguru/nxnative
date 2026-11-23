@@ -118,6 +118,32 @@ class Toolchain(unittest.TestCase):
         self.assertEqual(m.dtxcode('27.2'), '2720'); self.assertEqual(m.dtxcode('16.4.1'), '1641')
 
 
+class SwiftPrebuilt(unittest.TestCase):
+    """linux/bin/xcodebuild links the Swift object compiled on a Mac (linux/swift/prebuilt.py) only when it was built for this checkout's Swift sources"""
+    def test_key_and_use(self):
+        import importlib.machinery, importlib.util
+        sys.path.insert(0, str(LINUX / 'swift')); import prebuilt
+        tmp = Path(tempfile.mkdtemp(prefix='nxn_swift_'))
+        try:
+            k = prebuilt.key()
+            self.assertEqual(k, prebuilt.key())
+            self.assertIn(REPO / 'dm/host/save_sync.h', prebuilt.inputs())
+            names = [p.name for p in prebuilt.swift_files()]
+            self.assertIn('Launcher.swift', names)
+            (tmp / prebuilt.OBJECT).write_bytes(b'\xcf\xfa\xed\xfe object')
+            (tmp / prebuilt.INFO).write_text(json.dumps({'key': k, 'files': names, 'xcode': 'Xcode 26.6'}))
+            os.environ['NXN_SWIFT_PREBUILT'] = str(tmp)
+            spec = importlib.util.spec_from_loader('xcb2', importlib.machinery.SourceFileLoader('xcb2', str(LINUX / 'bin/xcodebuild')))
+            m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+            units = [(p, []) for p in prebuilt.swift_files()]
+            out = m.swift_prebuilt(tmp / 'obj', units)
+            self.assertEqual(out[0].read_bytes(), b'\xcf\xfa\xed\xfe object')
+            (tmp / prebuilt.INFO).write_text(json.dumps({'key': 'other', 'files': names}))
+            with self.assertRaises(SystemExit): m.swift_prebuilt(tmp / 'obj', units)
+        finally:
+            os.environ.pop('NXN_SWIFT_PREBUILT', None); shutil.rmtree(tmp, ignore_errors=True)
+
+
 def make_xip(path, files):
     """A minimal .xip: a xar with one file Content, a pbzx stream (one XZ chunk, one stored chunk) of an odc cpio archive"""
     cp = io.BytesIO()

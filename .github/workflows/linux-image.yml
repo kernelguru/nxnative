@@ -18,7 +18,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  swift:
+    # The iOS launcher's Swift sources, compiled with Apple's compiler: SwiftUI's @State is a macro whose plugin only macOS runs (linux/swift/prebuilt.py). The object depends on no
+    # game; the image carries it and linux/bin/xcodebuild links it when its key matches the checkout's sources.
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile the Swift sources for iOS
+        run: |
+          xcodebuild -version
+          python3 linux/swift/prebuilt.py build linux/prebuilt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swift-prebuilt
+          path: linux/prebuilt/
+          retention-days: 7
+
   image:
+    needs: swift
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -29,6 +49,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: swift-prebuilt
+          path: linux/prebuilt/
+      - name: Check the prebuilt Swift object against this checkout
+        run: |
+          cat linux/prebuilt/DmIOS-swift.json
+          test "$(python3 linux/swift/prebuilt.py key)" = "$(python3 -c 'import json; print(json.load(open("linux/prebuilt/DmIOS-swift.json"))["key"])')"
       - name: Image name (lowercase owner)
         id: name
         run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nxnative-linux" >> "$GITHUB_OUTPUT"
