@@ -18,6 +18,14 @@ COPY dm/tools/nx_extract dm/tools/nx_extract
 COPY linux/setup/build_tools.sh linux/setup/build_tools.sh
 RUN mkdir -p dm/gfx/tools/dmsh_xlate_bin dm/tools/nx_extract_bin && WORK=/tmp/nxn_tools sh linux/setup/build_tools.sh && rm -rf /tmp/nxn_tools
 
+# ---- the Mach-O linker: lld of an LLVM release (Ubuntu's LLVM 18 cannot read the iOS 27 SDK's .tbd files; NXNativeWindows' Linux build tested 23.1.4) ----
+FROM ubuntu:24.04 AS lld
+ARG LLVM_VERSION=23.1.4
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/llvm && curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-Linux-X64.tar.xz" \
+      | tar -xJ -C /opt/llvm --strip-components=1 --wildcards '*/bin/lld' \
+    && ln -s lld /opt/llvm/bin/ld64.lld && /opt/llvm/bin/ld64.lld --version
+
 # ---- the builder ----
 FROM ${SWIFT_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 PYTHONUNBUFFERED=1
@@ -29,7 +37,8 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
 # ldid (ProcursusTeam): the ad-hoc signature that carries the IPA's entitlements
 RUN git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid && make -C /tmp/ldid && install -m755 /tmp/ldid/ldid /usr/local/bin/ldid && rm -rf /tmp/ldid
 # lld answers as the Mach-O linker under the name clang's Darwin driver asks for
-RUN for d in /usr/bin $(dirname "$(command -v swiftc)"); do [ -e "$d/ld64.lld" ] || { l=$(command -v lld || ls /usr/bin/lld-* | head -1); ln -s "$l" "$d/ld64.lld"; }; done; ld64.lld --version
+COPY --from=lld /opt/llvm /opt/llvm
+ENV NXN_LD64=/opt/llvm/bin/ld64.lld
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir lz4 "capstone>=5,<6" fonttools zbic backports.zstd nsz pyyaml pillow cryptography \
         fastapi "uvicorn[standard]" python-multipart httpx
 COPY . /opt/nxnative

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# clang for an Apple target, as `xcrun -sdk <sdk> clang` gives it on a Mac: the distribution's clang with the SDK as sysroot, the Apple target, and lld as the Mach-O linker.
+# clang for an Apple target, as `xcrun -sdk <sdk> clang` gives it on a Mac: the distribution's clang with the SDK as sysroot, the Apple target, and lld as the Mach-O linker
+# (NXN_LD64: the linker, else ld64.lld on PATH; an LLVM older than about 20 cannot read the iOS 27 SDK's .tbd files).
 # The SDK is NXN_SDK (set by xcrun) or the one -isysroot names; -arch / -target / --target on the command line are kept, else the target is arm64-apple-<os> at the SDK's version
 # or the -m<os>-version-min= given. Xcode's own compiler runtime (libclang_rt.<os>.a) is linked when the command links, as Apple's clang does.
 import os, sys
@@ -25,7 +26,8 @@ if not any(a in ('-target', '-arch') or a.startswith('--target') for a in args):
 linking = not any(a in ('-c', '-S', '-E', '-M', '-MM', '-fsyntax-only', '--version', '-v', '-###') for a in args)
 post = []
 if linking:
-    pre += ['-fuse-ld=lld']
+    ld = os.environ.get('NXN_LD64') or nxn.which('ld64.lld')   # the Mach-O linker: the image's LLVM release lld (NXN_LD64), which reads the SDK's current .tbd files
+    pre += ['-fuse-ld=lld'] + ([f'--ld-path={ld}'] if ld else [])   # -fuse-ld=lld too: clang then passes lld's arguments (-platform_version)
     rt = nxn.clang_rt(osn)
     if rt: post += [str(rt)]
 os.execv(cc, [cc, *pre, *args, *post])
