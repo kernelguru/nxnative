@@ -45,7 +45,7 @@ def defaults(desc, deploy):
             'CONFIGURATION_TEMP_DIR': '$(OBJROOT)/$(PROJECT_NAME).build/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)',
             'TARGET_TEMP_DIR': '$(CONFIGURATION_TEMP_DIR)/$(TARGET_NAME).build', 'GCC_OPTIMIZATION_LEVEL': 's', 'SWIFT_OPTIMIZATION_LEVEL': '-O',
             'SWIFT_COMPILATION_MODE': 'wholemodule', 'TARGETED_DEVICE_FAMILY': '1', 'CLANG_ENABLE_MODULES': 'YES', 'GCC_C_LANGUAGE_STANDARD': 'gnu11',
-            'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20', 'DEAD_CODE_STRIPPING': 'YES', 'ENABLE_NS_ASSERTIONS': 'NO', 'CLANG_ENABLE_OBJC_WEAK': 'YES',
+            'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++20', 'DEAD_CODE_STRIPPING': 'NO',   # NO: the embedded modules are sections no symbol names (gen_embed.py), which lld's -dead_strip drops 'ENABLE_NS_ASSERTIONS': 'NO', 'CLANG_ENABLE_OBJC_WEAK': 'YES',
             'DEBUG_INFORMATION_FORMAT': 'dwarf-with-dsym', 'SWIFT_VERSION': '5.0', 'LD_RUNPATH_SEARCH_PATHS': '$(inherited) @executable_path/Frameworks'}
 
 
@@ -233,6 +233,34 @@ def icons(catalogs, name, app, info):
     say(f'icon: {src.name} → {", ".join(b for b, _, _, _ in ICONS)}')
 
 
+def macho_sections(path):
+    """{(segment, section)} of a thin 64-bit Mach-O file (its LC_SEGMENT_64 load commands)"""
+    import struct
+    with open(path, 'rb') as f: hdr = f.read(32)
+    if hdr[:4] != b'\xcf\xfa\xed\xfe': return set()
+    ncmds, sizeofcmds = struct.unpack_from('<II', hdr, 16)
+    with open(path, 'rb') as f: f.seek(32); cmds = f.read(sizeofcmds)
+    out, off = set(), 0
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from('<II', cmds, off)
+        if cmd == 0x19:   # LC_SEGMENT_64
+            nsects = struct.unpack_from('<I', cmds, off + 64)[0]
+            for k in range(nsects):
+                b = off + 72 + k * 80
+                out.add((cmds[b + 16:b + 32].rstrip(b'\0').decode(), cmds[b:b + 16].rstrip(b'\0').decode()))
+        off += size
+    return out
+
+
+def embedded_sections(units):
+    """The (segment, section) pairs the assembly sources declare (.section seg,sect): gen_embed.py's modules, which only the loader finds, by name"""
+    out = set()
+    for p, _ in units:
+        if p.suffix not in ASM_EXT: continue
+        for m in re.finditer(r'^\s*\.section\s+(\w+)\s*,\s*(\w+)', p.read_text(errors='replace'), re.M): out.add((m[1], m[2]))
+    return out
+
+
 def dtxcode(v):   # Xcode 27.2 → 2720, 16.4.1 → 1641: the major version, then one digit each for minor and patch
     p = [int(x) for x in re.findall(r'\d+', v or '')[:3]] + [0, 0, 0]
     return f'{p[0]}{min(p[1], 9)}{min(p[2], 9)}'
@@ -324,6 +352,10 @@ def build(args):
     if r.returncode:
         say(' '.join(shlex.quote(c) for c in link)); say(r.stdout + r.stderr); fail('the link failed')
     if r.stderr.strip(): say(r.stderr.strip()[:4000])
+    want, have = embedded_sections(units), macho_sections(exe)
+    lost = sorted(want - have)
+    if lost: fail(f'the linked executable lacks {len(lost)} section(s) its assembly declares, which the loader looks up by name: ' + ', '.join(f'{a},{b}' for a, b in lost[:6]))
+    if want: say(f'note: all {len(want)} embedded sections are in the executable')
     info = {}
     if desc.get('info'):
         with open(desc['info'], 'rb') as f: info = expand_plist(plistlib.load(f), st)
