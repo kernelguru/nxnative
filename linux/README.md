@@ -37,6 +37,7 @@ Settings are passed through the environment in `compose.yml`:
 | `NXN_PASSWORD` | HTTP Basic login for the web interface (user `nxnative`). Leave it empty only behind an authenticating reverse proxy |
 | `ROMM_URL`, `ROMM_TOKEN` or `ROMM_USER` / `ROMM_PASSWORD` | RomM: the site address, and a client API token (`rmm_…`) or a login. They can also be set in the web interface |
 | `NXN_IPA_EXPORT` | a folder in the container where finished IPAs are also copied |
+| `IPA_SOURCE_DAV_URL`, `IPA_SOURCE_TOKEN`, `IPA_SOURCE_AUTO` | [ipa-source](https://github.com/kernelguru/ipa-source)'s WebDAV folder (`…/dav/`; the internal address avoids a reverse proxy's limits), an API token with scope `upload`, and whether every finished IPA is uploaded there. **→ ipa-source** in the IPA list sends one later. These can also be set in the web interface |
 
 Without the web interface, the same steps run in the container's shell:
 

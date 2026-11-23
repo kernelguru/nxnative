@@ -144,6 +144,48 @@ class SwiftPrebuilt(unittest.TestCase):
             os.environ.pop('NXN_SWIFT_PREBUILT', None); shutil.rmtree(tmp, ignore_errors=True)
 
 
+class DavUpload(unittest.TestCase):
+    """linux/web/davupload.py against a WebDAV folder that answers as ipa-source's /dav/ does: a bearer token, 207 to PROPFIND, 201 to a PUT into the top folder"""
+    def setUp(self):
+        try: import httpx  # noqa: F401  (the image has it)
+        except ImportError: self.skipTest('httpx is not installed')
+        import http.server, threading
+        self.tmp = Path(tempfile.mkdtemp(prefix='nxn_dav_'))
+        got = self.got = {}
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def ok(self):
+                if self.headers.get('Authorization') != 'Bearer ipas_good': self.send_response(401); self.end_headers(); return False
+                return True
+            def do_PROPFIND(self):
+                if self.ok(): self.send_response(207); self.send_header('DAV', '1, 2'); self.end_headers()
+            def do_PUT(self):
+                n = int(self.headers['Content-Length'])
+                body = self.rfile.read(n)
+                if not self.ok(): return
+                got[self.path] = (body, self.headers.get('Transfer-Encoding'))
+                self.send_response(201); self.end_headers()
+        self.srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f'http://127.0.0.1:{self.srv.server_port}/dav'
+
+    def tearDown(self):
+        self.srv.shutdown(); shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_check_and_upload(self):
+        sys.path.insert(0, str(LINUX / 'web')); import davupload
+        self.assertIn('answers', davupload.check(self.url, 'ipas_good'))
+        with self.assertRaises(davupload.DavError): davupload.check(self.url, 'wrong')
+        ipa = self.tmp / 'Mario Kart World-20261123.ipa'; ipa.write_bytes(os.urandom(20 << 20) )
+        seen = []
+        target = davupload.upload(self.url, ipa, 'ipas_good', progress=lambda a, b: seen.append((a, b)))
+        self.assertTrue(target.endswith('/dav/Mario%20Kart%20World-20261123.ipa'))
+        body, te = self.got['/dav/Mario%20Kart%20World-20261123.ipa']
+        self.assertEqual(body, ipa.read_bytes()); self.assertIsNone(te)   # streamed with its length, not chunked
+        self.assertEqual(seen[-1], (20 << 20, 20 << 20))
+        with self.assertRaises(davupload.DavError): davupload.upload(self.url, ipa, 'wrong')
+
+
 def make_xip(path, files):
     """A minimal .xip: a xar with one file Content, a pbzx stream (one XZ chunk, one stored chunk) of an odc cpio archive"""
     cp = io.BytesIO()

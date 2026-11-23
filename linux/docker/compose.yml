@@ -32,3 +32,8 @@ services:
       - ROMM_PASSWORD=
       # where finished IPAs are also copied (optional, e.g. a folder a Feather / AltStore source serves)
       - NXN_IPA_EXPORT=
+      # ipa-source (kernelguru/ipa-source): its WebDAV folder (the internal address avoids a reverse proxy's limits), an API token of scope "upload", and whether every
+      # finished IPA goes there. Also settable in the web interface.
+      - IPA_SOURCE_DAV_URL=
+      - IPA_SOURCE_TOKEN=
+      - IPA_SOURCE_AUTO=

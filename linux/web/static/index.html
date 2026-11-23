@@ -67,7 +67,10 @@
     <h3>RomM and export</h3>
     <div class="row"><input type="text" id="romm_url" placeholder="https://romm.example.lan"><input type="password" id="romm_token" placeholder="client API token (rmm_…)"></div>
     <div class="row"><input type="text" id="romm_user" placeholder="or user"><input type="password" id="romm_password" placeholder="password"></div>
-    <div class="row"><input type="text" id="ipa_export" placeholder="copy IPAs to (folder in the container, optional)"><button class="b" onclick="saveSettings()">Save</button><span id="set-note" class="dim"></span></div>
+    <div class="row"><input type="text" id="ipa_export" placeholder="copy IPAs to (folder in the container, optional)"></div>
+    <div class="row"><input type="text" id="dav_url" placeholder="ipa-source WebDAV, e.g. http://10.0.0.5:8000/dav/" style="min-width:320px"><input type="password" id="dav_token" placeholder="ipa-source API token (scope upload)">
+      <label><input type="checkbox" id="dav_auto"> upload every finished IPA</label></div>
+    <div class="row"><button class="b" onclick="saveSettings()">Save</button><button class="s" onclick="testDav()">Test WebDAV</button><span id="set-note" class="dim"></span></div>
   </div>
 </section>
 
@@ -134,7 +137,8 @@ async function refresh() {
       y(s.fonts.std.own && s.fonts.letters.own, 'Apple fonts' + (s.fonts.std.own ? '' : ' (stand-ins in use)')),
       y(Object.values(s.tools).every(Boolean), 'tools: ' + Object.entries(s.tools).map(([k,v]) => v ? k : `<b class="bad">${k}</b>`).join(', '))].join('<br>') } catch (e) { $('#st').textContent = e }
   const t = location.hash.slice(1) || 'setup';
-  if (t === 'setup') { const c = await api('/api/settings'); for (const k of ['romm_url','romm_user','ipa_export']) $('#'+k).value = c[k];
+  if (t === 'setup') { const c = await api('/api/settings'); for (const k of ['romm_url','romm_user','ipa_export','dav_url']) $('#'+k).value = c[k];
+    $('#dav_auto').checked = !!c.dav_auto; $('#dav_token').placeholder = c.dav_token_set ? 'token stored (type to replace, - to clear)' : 'ipa-source API token (scope upload)';
     $('#romm_token').placeholder = c.romm_token_set ? 'token stored (type to replace, - to clear)' : 'client API token (rmm_…)';
     $('#set-note').textContent = c.from_env.length ? 'set in the environment: ' + c.from_env.join(', ') : '' }
   if (t === 'games' || t === 'builds') { const g = await api('/api/games');
@@ -148,10 +152,13 @@ async function refresh() {
     $('#jl').innerHTML = j.map(x => `<tr onclick="openJob('${x.id}')" style="cursor:pointer"><td>${esc(x.title)}</td><td><span class="pill ${x.state==='done'?'ok':x.state==='failed'?'bad':x.state==='running'?'warn':''}">${x.state}</span></td>
       <td class="dim">${x.stage ? esc(x.stage.name||'') : ''} ${x.error ? '<span class="bad">'+esc(x.error)+'</span>' : ''}</td><td class="dim">${x.id}</td></tr>`).join('') || '<tr><td class="dim">no jobs yet</td></tr>';
     const i = await api('/api/ipas'); $('#il').innerHTML = i.map(x => `<tr><td><a href="/api/ipa/${encodeURIComponent(x.name)}">${esc(x.name)}</a></td><td class="dim">${gb(x.size)}</td>
-      <td class="dim">${new Date(x.time*1000).toLocaleString()}</td><td><button class="s" onclick="delIpa('${esc(x.name)}')">Delete</button></td></tr>`).join('') || '<tr><td class="dim">none yet</td></tr>' }
+      <td class="dim">${new Date(x.time*1000).toLocaleString()}</td><td><button class="s" onclick="sendIpa('${esc(x.name)}')">→ ipa-source</button> <button class="s" onclick="delIpa('${esc(x.name)}')">Delete</button></td></tr>`).join('') || '<tr><td class="dim">none yet</td></tr>' }
 }
-async function saveSettings() { const b = {}; for (const k of ['romm_url','romm_user','ipa_export','romm_token','romm_password']) b[k] = $('#'+k).value;
-  await post('/api/settings', b); $('#romm_token').value = $('#romm_password').value = ''; $('#set-note').textContent = 'saved'; refresh() }
+async function saveSettings() { const b = {}; for (const k of ['romm_url','romm_user','ipa_export','romm_token','romm_password','dav_url','dav_token']) b[k] = $('#'+k).value;
+  b.dav_auto = $('#dav_auto').checked;
+  await post('/api/settings', b); $('#romm_token').value = $('#romm_password').value = $('#dav_token').value = ''; $('#set-note').textContent = 'saved'; refresh() }
+async function testDav() { $('#set-note').textContent = 'testing…'; try { const r = await post('/api/settings/test-dav'); $('#set-note').textContent = '✓ ' + r.msg } catch (e) { $('#set-note').textContent = '✗ ' + e.message } }
+async function sendIpa(n) { try { const j = await post(`/api/ipa/${encodeURIComponent(n)}/upload`); openJob(j.id); refresh() } catch (e) { alert(e.message) } }
 async function newGame() { await post('/api/games', {name: $('#newgame').value}); $('#newgame').value = ''; refresh() }
 async function addFiles(g, inp) { const el = document.getElementById('gu-'+g); for (const f of inp.files) { try { await upload(`/api/games/${encodeURIComponent(g)}/files/${encodeURIComponent(f.name)}`, f, el) } catch {} } refresh() }
 async function delFile(g, f) { if (confirm(`Delete ${f}?`)) { await api(`/api/games/${encodeURIComponent(g)}/files/${encodeURIComponent(f)}`, {method:'DELETE'}); refresh() } }

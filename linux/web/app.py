@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 HERE = Path(__file__).resolve().parent
 LINUX = HERE.parent; REPO = LINUX.parent
 sys.path.insert(0, str(LINUX / 'lib')); sys.path.insert(0, str(LINUX / 'setup')); sys.path.insert(0, str(HERE))
-import nxn, setup as nxsetup, romm as rommlib
+import nxn, setup as nxsetup, romm as rommlib, davupload
 
 DATA = Path(os.environ.get('NXN_DATA', '/data'))
 GAMES, BUILDS, IPA, KEYS, UPLOADS = DATA / 'games', DATA / 'builds', DATA / 'ipa', DATA / 'keys', DATA / 'uploads'
@@ -51,7 +51,8 @@ def safe_name(n, what='name'):
 def settings():
     try: s = json.loads(SETTINGS.read_text())
     except (OSError, ValueError): s = {}
-    for k, env in (('romm_url', 'ROMM_URL'), ('romm_token', 'ROMM_TOKEN'), ('romm_user', 'ROMM_USER'), ('romm_password', 'ROMM_PASSWORD'), ('ipa_export', 'NXN_IPA_EXPORT')):
+    for k, env in (('romm_url', 'ROMM_URL'), ('romm_token', 'ROMM_TOKEN'), ('romm_user', 'ROMM_USER'), ('romm_password', 'ROMM_PASSWORD'), ('ipa_export', 'NXN_IPA_EXPORT'),
+                   ('dav_url', 'IPA_SOURCE_DAV_URL'), ('dav_token', 'IPA_SOURCE_TOKEN'), ('dav_auto', 'IPA_SOURCE_AUTO')):
         if os.environ.get(env): s[k] = os.environ[env]
     return s
 
@@ -262,7 +263,9 @@ def get_settings():
     s = settings()
     return {'romm_url': s.get('romm_url', ''), 'romm_user': s.get('romm_user', ''), 'romm_token_set': bool(s.get('romm_token')),
             'romm_password_set': bool(s.get('romm_password')), 'ipa_export': s.get('ipa_export', ''),
-            'from_env': [k for k in ('ROMM_URL', 'ROMM_TOKEN', 'ROMM_USER', 'ROMM_PASSWORD', 'NXN_IPA_EXPORT') if os.environ.get(k)]}
+            'dav_url': s.get('dav_url', ''), 'dav_token_set': bool(s.get('dav_token')), 'dav_auto': dav_auto(s),
+            'from_env': [k for k in ('ROMM_URL', 'ROMM_TOKEN', 'ROMM_USER', 'ROMM_PASSWORD', 'NXN_IPA_EXPORT', 'IPA_SOURCE_DAV_URL', 'IPA_SOURCE_TOKEN', 'IPA_SOURCE_AUTO')
+                         if os.environ.get(k)]}
 
 
 @app.post('/api/settings')
@@ -270,9 +273,10 @@ async def set_settings(request: Request):
     body = await request.json()
     try: s = json.loads(SETTINGS.read_text())
     except (OSError, ValueError): s = {}
-    for k in ('romm_url', 'romm_user', 'ipa_export'):
+    for k in ('romm_url', 'romm_user', 'ipa_export', 'dav_url'):
         if k in body: s[k] = (body[k] or '').strip()
-    for k in ('romm_token', 'romm_password'):   # write-only: empty keeps the stored value, '-' clears it
+    if 'dav_auto' in body: s['dav_auto'] = bool(body['dav_auto'])
+    for k in ('romm_token', 'romm_password', 'dav_token'):   # write-only: empty keeps the stored value, '-' clears it
         if body.get(k) == '-': s.pop(k, None)
         elif body.get(k): s[k] = body[k]
     SETTINGS.write_text(json.dumps(s, indent=1)); os.chmod(SETTINGS, 0o600)
@@ -335,10 +339,14 @@ async def start_build(request: Request):
     def run(job):
         job.command(cmd, env=tool_env(), cwd=REPO)
         if not out.is_file(): raise RuntimeError('the build ended without an IPA')
-        exp = settings().get('ipa_export')
+        st = settings()
+        exp = st.get('ipa_export')
         if exp:
             try: Path(exp).mkdir(parents=True, exist_ok=True); shutil.copy2(out, Path(exp) / out.name); job.log(f'copied to {exp}/{out.name}')
             except OSError as e: job.log(f'[RED] copy to {exp} failed: {e}')
+        if st.get('dav_url') and dav_auto(st):
+            try: dav_send(job, out, st)
+            except davupload.DavError as e: job.log(f'[RED] {e}: the IPA stays here; "→ ipa-source" in the IPA list sends it again')
         return {'ipa': out.name, 'size': out.stat().st_size}
     return QUEUE.add(Job('build', f'IPA: {name}', run, {'game': name, 'options': o, 'ipa': out.name})).info()
 
@@ -374,6 +382,43 @@ def job_stop(jid: str):
     j = QUEUE.jobs.get(jid)
     if not j: raise HTTPException(404)
     j.stop(); return j.info()
+
+
+def dav_auto(s):
+    v = s.get('dav_auto', False)
+    return v if isinstance(v, bool) else str(v).lower() in ('1', 'true', 'yes', 'on')
+
+
+def dav_send(job, path, st):
+    """An IPA to the WebDAV folder (ipa-source's /dav/), its progress in the job's log"""
+    last = [0.0]
+    def progress(sent, total):
+        if time.time() - last[0] > 1 or sent == total:
+            last[0] = time.time(); job.log({'ev': 'progress', 'name': f'WebDAV: {path.name}', 'done': sent, 'total': total, 'unit': 'B'})
+    job.log({'ev': 'stage', 'name': f'upload to {st["dav_url"]}'})
+    t = time.time()
+    target = davupload.upload(st['dav_url'], path, st.get('dav_token', ''), progress=progress, stop=lambda: job.stop_asked)
+    job.log(f'uploaded {path.name} ({path.stat().st_size / 2**30:.2f} GB) to {target} in {time.time() - t:.0f} s')
+    return target
+
+
+@app.post('/api/settings/test-dav')
+def test_dav():
+    st = settings()
+    try: return {'ok': True, 'msg': davupload.check(st.get('dav_url', ''), st.get('dav_token', ''))}
+    except davupload.DavError as e: raise HTTPException(400, str(e))
+
+
+@app.post('/api/ipa/{filename}/upload')
+def upload_ipa(filename: str):
+    f = IPA / safe_name(filename, 'file name')
+    if not f.is_file() or f.suffix != '.ipa': raise HTTPException(404)
+    st = settings()
+    if not st.get('dav_url'): raise HTTPException(400, 'no WebDAV address set (Setup → RomM and export)')
+    def run(job):
+        try: return {'target': dav_send(job, f, settings())}
+        except davupload.DavError as e: raise RuntimeError(str(e))
+    return QUEUE.add(Job('upload', f'→ ipa-source: {f.name}', run, {'ipa': f.name})).info()
 
 
 @app.get('/api/ipa/{filename}')
