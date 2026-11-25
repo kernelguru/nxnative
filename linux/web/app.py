@@ -17,12 +17,13 @@ from fastapi.staticfiles import StaticFiles
 HERE = Path(__file__).resolve().parent
 LINUX = HERE.parent; REPO = LINUX.parent
 sys.path.insert(0, str(LINUX / 'lib')); sys.path.insert(0, str(LINUX / 'setup')); sys.path.insert(0, str(HERE))
-import nxn, setup as nxsetup, romm as rommlib, davupload
+import nxn, setup as nxsetup, romm as rommlib, davupload, names
 
 DATA = Path(os.environ.get('NXN_DATA', '/data'))
 GAMES, BUILDS, IPA, KEYS, UPLOADS = DATA / 'games', DATA / 'builds', DATA / 'ipa', DATA / 'keys', DATA / 'uploads'
 SETTINGS = DATA / 'settings.json'
 for d in (GAMES, BUILDS, IPA, KEYS, UPLOADS): d.mkdir(parents=True, exist_ok=True)
+for _note in names.fix_folders(GAMES): print(f'game folders: {_note}', flush=True)   # the ones made before folders lost their spaces (names.py)
 GAME_SUFFIXES = ('.nsp', '.nsz', '.xci', '.xcz', '.nup')
 NAME = re.compile(r'^[\w][\w .,()\[\]&+\'!-]{0,120}$')
 PASSWORD = os.environ.get('NXN_PASSWORD', '')
@@ -204,7 +205,14 @@ async def receive(request, dst):
 
 
 # ---- games ----
-def game_dir(name): return GAMES / safe_name(name, 'game folder')
+def game_folder(name):
+    """A game folder's name as it is kept: without spaces (names.py), then checked"""
+    return safe_name(names.folder_name(name), 'game folder')
+
+
+def game_dir(name):
+    """The folder of a game named with or without its spaces: an older link or a page loaded before the rename still finds it"""
+    return GAMES / game_folder(name)
 
 
 @app.get('/api/games')
@@ -220,7 +228,7 @@ def games():
 
 @app.post('/api/games')
 async def new_game(request: Request):
-    name = safe_name((await request.json()).get('name'), 'game folder')
+    name = game_folder((await request.json()).get('name'))
     (GAMES / name).mkdir(exist_ok=True)
     return {'name': name}
 
@@ -294,7 +302,7 @@ async def romm_import(request: Request):
     body = await request.json()
     ids = [int(i) for i in body.get('ids') or []]
     if not ids: raise HTTPException(400, 'no ROM chosen')
-    name = safe_name(body.get('game') or '', 'game folder')
+    name = game_folder(body.get('game') or '')
     client = romm_client()
     def run(job):
         d = GAMES / name; d.mkdir(exist_ok=True)
@@ -319,8 +327,10 @@ def profiles():
 @app.post('/api/builds')
 async def start_build(request: Request):
     o = await request.json()
-    name = safe_name(o.get('game'), 'game folder')
-    d = GAMES / name
+    raw = safe_name(o.get('game'), 'game folder')
+    d, note = names.fix_folder(GAMES / raw) if (GAMES / raw).is_dir() else (GAMES / game_folder(raw), None)   # a folder made by hand with spaces: renamed now
+    name = d.name
+    if note and d.name != names.folder_name(raw): raise HTTPException(409, note)
     if not d.is_dir() or not any(f.suffix.lower() in GAME_SUFFIXES for f in d.iterdir()): raise HTTPException(400, f'{name} holds no game files')
     if not (KEYS / 'prod.keys').is_file() and not any(f.suffix.lower() == '.nup' for f in d.iterdir()): raise HTTPException(400, 'prod.keys is missing (setup)')
     st = nxsetup.status()
@@ -337,6 +347,7 @@ async def start_build(request: Request):
     if o.get('allow_other_metal'): cmd.append('--allow-other-metal')
     if o.get('provisional'): cmd.append('--provisional')
     def run(job):
+        if note: job.log(f'game folder: {note}')
         job.command(cmd, env=tool_env(), cwd=REPO)
         if not out.is_file(): raise RuntimeError('the build ended without an IPA')
         st = settings()

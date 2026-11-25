@@ -186,6 +186,28 @@ class DavUpload(unittest.TestCase):
         with self.assertRaises(davupload.DavError): davupload.upload(self.url, ipa, 'wrong')
 
 
+class FolderNames(unittest.TestCase):
+    """linux/web/names.py: game folders without spaces, which the Metal compiler under Wine splits a path at"""
+    def test_names_and_repair(self):
+        sys.path.insert(0, str(LINUX / 'web')); import names
+        self.assertEqual(names.folder_name('Mario Kart World'), 'Mario-Kart-World')
+        self.assertEqual(names.folder_name('  Pokémon  Legends: Arceus '), 'Pokémon-Legends-Arceus')
+        self.assertEqual(names.folder_name('Mario & Luigi: Brothership'), 'Mario-&-Luigi-Brothership')
+        self.assertEqual(names.folder_name('A - B'), 'A-B')
+        tmp = Path(tempfile.mkdtemp(prefix='nxn_names_'))
+        try:
+            (tmp / 'Mario Kart World/0400C3F00006E000_build').mkdir(parents=True); (tmp / 'Mario Kart World/game.nsp').write_bytes(b'x')
+            (tmp / 'Super Mario Odyssey').mkdir(); (tmp / 'Super-Mario-Odyssey').mkdir()   # both: the spaced one stays, with a note
+            (tmp / 'Zelda').mkdir()
+            notes = names.fix_folders(tmp)
+            self.assertEqual((tmp / 'Mario-Kart-World/game.nsp').read_bytes(), b'x')
+            self.assertTrue((tmp / 'Mario-Kart-World/0400C3F00006E000_build').is_dir())
+            self.assertFalse((tmp / 'Mario Kart World').exists())
+            self.assertTrue((tmp / 'Super Mario Odyssey').is_dir())
+            self.assertEqual(len(notes), 2); self.assertIn('keeps its spaces', ' '.join(notes))
+        finally: shutil.rmtree(tmp, ignore_errors=True)
+
+
 def make_xip(path, files):
     """A minimal .xip: a xar with one file Content, a pbzx stream (one XZ chunk, one stored chunk) of an odc cpio archive"""
     cp = io.BytesIO()
